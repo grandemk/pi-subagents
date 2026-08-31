@@ -104,6 +104,40 @@ describe("viewer-keys", () => {
 });
 
 describe("ConversationViewer custom keybindings", () => {
+  it("routes up/down to agent navigation and Esc to the parent", () => {
+    const onNavigate = vi.fn();
+    const done = vi.fn();
+    const tui = {
+      terminal: { rows: 20, columns: 80 },
+      requestRender: vi.fn(),
+    } as any;
+    const session = { messages: [], subscribe: vi.fn(() => vi.fn()) } as any;
+    const record = {
+      id: "test-1",
+      type: "general-purpose",
+      description: "test agent",
+      status: "completed",
+      toolUses: 0,
+      startedAt: Date.now(),
+    } as AgentRecord;
+    const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as any;
+    const viewer = new ConversationViewer(
+      tui, session, record, undefined, theme, done, undefined, undefined, undefined, onNavigate,
+    );
+
+    viewer.handleInput(UP);
+    viewer.handleInput(DOWN);
+    viewer.handleInput("\x1b[D");
+    viewer.handleInput("\x1b[C");
+    viewer.handleInput("\x1b");
+
+    expect(onNavigate).toHaveBeenNthCalledWith(1, -1);
+    expect(onNavigate).toHaveBeenNthCalledWith(2, 1);
+    expect(onNavigate).toHaveBeenNthCalledWith(3, -1);
+    expect(onNavigate).toHaveBeenNthCalledWith(4, 1);
+    expect(done).toHaveBeenCalledOnce();
+  });
+
   it("scrolls with ctrl+p/ctrl+n when bound to tui.select.up/down", () => {
     const viewer = createViewer(createEmacsKeybindings());
     const bottom = scrollOffset(viewer);

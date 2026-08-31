@@ -71,8 +71,10 @@ interface Harness {
   fleet: FleetList;
   ui: FleetUICtx;
   manager: AgentManager;
-  /** The overlay component (a real ConversationViewer) once one is opened. */
-  overlayComponent: () => { handleInput(data: string): void } | undefined;
+  /** The viewer component (a real ConversationViewer) once one is opened. */
+  overlayComponent: () => { handleInput(data: string): void; render(width: number): string[] } | undefined;
+  /** Options passed to ctx.ui.custom for the viewer. */
+  customOptions: () => unknown;
   /** Feed a key to the registered input handler; returns the consume result. */
   press: (data: string) => { consume?: boolean } | undefined;
   /** Render the currently-registered below-editor widget at the given width. */
@@ -95,7 +97,8 @@ function harness(agents: AgentRecord[]): Harness {
   let opened = false;
   let closed = false;
   let overlayDone: ((r: undefined) => void) | undefined;
-  let overlayComponent: { handleInput(data: string): void } | undefined;
+  let overlayComponent: { handleInput(data: string): void; render(width: number): string[] } | undefined;
+  let customOptions: unknown;
   const fakeTui = { requestRender: () => {}, terminal: { columns: 120, rows: 40 } };
 
   const ui: FleetUICtx = {
@@ -103,8 +106,9 @@ function harness(agents: AgentRecord[]): Harness {
     onTerminalInput: (h) => { inputHandler = h; return () => { inputHandler = undefined; }; },
     getEditorText: () => editorText,
     notify: () => {},
-    custom: ((factory: any) => {
+    custom: ((factory: any, options?: unknown) => {
       opened = true;
+      customOptions = options;
       return new Promise<undefined>((resolve) => {
         const done = (r: undefined) => { closed = true; overlayDone = undefined; resolve(r); };
         overlayDone = done;
@@ -125,6 +129,7 @@ function harness(agents: AgentRecord[]): Harness {
     ui,
     manager,
     overlayComponent: () => overlayComponent,
+    customOptions: () => customOptions,
     press: (data) => inputHandler?.(data),
     render: (width = 120) => (widgetFactory ? widgetFactory(fakeTui, theme).render(width) : []),
     setEditorText: (t) => { editorText = t; },
@@ -176,7 +181,7 @@ describe("FleetList navigation", () => {
     const res = h.press(DOWN);
     expect(res).toEqual({ consume: true });
     // main selected, list active → nav hint shown
-    expect(h.render().some(l => l.includes("enter view"))).toBe(true);
+    expect(h.render().some(l => l.includes("select · esc back"))).toBe(true);
   });
 
   it("also activates on ← (matches the '← for agents' hint)", () => {
@@ -250,19 +255,22 @@ describe("FleetList navigation", () => {
     }
   });
 
-  it("moves selection down/up and clamps at the ends", () => {
+  it("moves the displayed conversation down/up and clamps at the ends", () => {
     const agents = [
       makeRecord({ id: "a1", description: "one" }),
       makeRecord({ id: "a2", description: "two" }),
     ];
     const h = harness(agents);
-    h.press(DOWN); // activate → index 0 (main)
-    h.press(DOWN); // → 1 (a1)
+    h.press(DOWN); // activate → main
+    h.press(DOWN); // arrows show a1
+    const viewer = h.overlayComponent()!;
     expect(h.render().find(l => l.includes("one"))).toContain("●");
-    h.press(DOWN); // → 2 (a2)
-    h.press(DOWN); // clamp at 2
+    viewer.handleInput(DOWN); // → a2
+    viewer.handleInput(DOWN); // clamp at a2
     expect(h.render().find(l => l.includes("two"))).toContain("●");
     expect(h.render().find(l => l.includes("one"))).toContain("○");
+    viewer.handleInput(UP); // → a1
+    expect(h.render().find(l => l.includes("one"))).toContain("●");
   });
 
   it("↑ above 'main' deactivates (returns to the prompt)", () => {
@@ -280,10 +288,25 @@ describe("FleetList navigation", () => {
     expect(h.render().some(l => l.includes("← for agents"))).toBe(true);
   });
 
+  it("uses left/right as navigation aliases while changing the output", () => {
+    const h = harness([
+      makeRecord({ id: "a1", description: "one" }),
+      makeRecord({ id: "a2", description: "two" }),
+    ]);
+    h.press(DOWN); // activate on main
+    expect(h.press(RIGHT)).toEqual({ consume: true }); // show a1
+    expect(h.render().find(l => l.includes("one"))).toContain("●");
+    const viewer = h.overlayComponent()!;
+    viewer.handleInput(RIGHT); // → a2
+    expect(h.render().find(l => l.includes("two"))).toContain("●");
+    viewer.handleInput(LEFT); // → a1
+    expect(h.render().find(l => l.includes("one"))).toContain("●");
+  });
+
   it("passes non-nav keys through and cancels navigation", () => {
     const h = harness([makeRecord()]);
     h.press(DOWN);
-    expect(h.press(RIGHT)).toBeUndefined();
+    expect(h.press("z")).toBeUndefined();
     expect(h.render().some(l => l.includes("← for agents"))).toBe(true);
   });
 
@@ -431,8 +454,10 @@ describe("FleetList rendering", () => {
       makeRecord({ id: `a${i}`, description: `report ${i}` }));
     const h = harness(agents);
     h.press(DOWN); // activate (main)
+    h.press(DOWN); // arrows show the first agent
     // step down to the last agent (8 agents → roster index 8)
-    for (let i = 0; i < 8; i++) h.press(DOWN);
+    const viewer = h.overlayComponent()!;
+    for (let i = 0; i < 7; i++) viewer.handleInput(DOWN);
     const lines = h.render(120);
     expect(lines.find(l => l.includes("report 7"))).toContain("●");
     expect(lines.some(l => l.includes("↑"))).toBe(true); // hidden-above indicator
@@ -440,12 +465,63 @@ describe("FleetList rendering", () => {
 });
 
 describe("FleetList overlay lifecycle", () => {
-  it("Enter on 'main' just deactivates (no overlay)", () => {
+  it("Enter does nothing while selecting (no overlay)", () => {
     const h = harness([makeRecord()]);
     h.press(DOWN); // active, index 0 (main)
-    h.press(ENTER);
+    expect(h.press(ENTER)).toEqual({ consume: true });
     expect(h.overlayOpened()).toBe(false); // never opened an overlay
-    expect(h.render().some(l => l.includes("← for agents"))).toBe(true);
+    expect(h.render().some(l => l.includes("select · esc back"))).toBe(true);
+  });
+
+  it("Esc closes the viewer and selects main", async () => {
+    const h = harness([makeRecord({ id: "a1", description: "one" })]);
+    h.press(DOWN); // activate (main)
+    h.press(DOWN); // arrows open the agent viewer
+    h.overlayComponent()!.handleInput(ESC);
+    await Promise.resolve();
+
+    expect(h.overlayClosed()).toBe(true);
+    expect(h.render().find(l => l.includes("main"))).toContain("●");
+    expect(h.render().find(l => l.includes("one"))).toContain("○");
+  });
+
+  it("uses the normal flow viewer and switches agents with up/down", async () => {
+    const fakeSession = { subscribe: () => () => {}, messages: [] };
+    const agents = [
+      makeRecord({ id: "a1", description: "one", session: fakeSession as any }),
+      makeRecord({ id: "a2", description: "two", session: fakeSession as any }),
+    ];
+    const h = harness(agents);
+    h.press(DOWN); // activate (main)
+    h.press(DOWN); // arrows open a1's normal-flow viewer
+
+    expect(h.customOptions()).toEqual({ overlay: false });
+    const viewer = h.overlayComponent()!;
+    expect(viewer.render(100).join("\\n")).toContain("one");
+
+    viewer.handleInput(DOWN);
+    expect(viewer.render(100).join("\\n")).toContain("two");
+    expect(h.render().find(l => l.includes("two"))).toContain("●");
+    expect(h.render().find(l => l.includes("one"))).toContain("○");
+    viewer.handleInput(LEFT);
+    expect(viewer.render(100).join("\\n")).toContain("one");
+    expect(h.render().find(l => l.includes("one"))).toContain("●");
+    expect(h.render().find(l => l.includes("two"))).toContain("○");
+    viewer.handleInput(RIGHT);
+    expect(viewer.render(100).join("\\n")).toContain("two");
+    expect(h.render().find(l => l.includes("two"))).toContain("●");
+    expect(h.render().find(l => l.includes("one"))).toContain("○");
+    viewer.handleInput(UP);
+    expect(viewer.render(100).join("\\n")).toContain("one");
+    expect(h.render().find(l => l.includes("one"))).toContain("●");
+    expect(h.render().find(l => l.includes("two"))).toContain("○");
+
+    // Moving above the first subagent returns to the parent flow and selects
+    // the parent row again.
+    viewer.handleInput(UP);
+    await Promise.resolve();
+    expect(h.overlayClosed()).toBe(true);
+    expect(h.render().find(l => l.includes("main"))).toContain("●");
   });
 
   it("keeps the cursor on the viewed agent after closing, even if the list reordered", async () => {
@@ -457,9 +533,8 @@ describe("FleetList overlay lifecycle", () => {
     ];
     const h = harness(agents);
     h.press(DOWN); // activate (main, idx 0)
-    h.press(DOWN); // a1 (idx 1)
-    h.press(DOWN); // a2 (idx 2)
-    h.press(ENTER); // open a2
+    h.press(DOWN); // a1 (idx 1), opens its viewer
+    h.overlayComponent()!.handleInput(DOWN); // a2 (idx 2)
     // a1 finishes and drops out while viewing → a2 shifts from idx 2 to idx 1.
     agents.splice(0, 1);
     await h.closeOverlay();
@@ -472,8 +547,7 @@ describe("FleetList overlay lifecycle", () => {
     const agents = [makeRecord({ id: "live", description: "the one" })];
     const h = harness(agents);
     h.press(DOWN);  // activate (main)
-    h.press(DOWN);  // → the agent
-    h.press(ENTER); // open the conversation viewer
+    h.press(DOWN);  // arrows open the agent's viewer
 
     const viewer = h.overlayComponent();
     expect(viewer).toBeDefined();
@@ -488,8 +562,7 @@ describe("FleetList overlay lifecycle", () => {
     const agents = [makeRecord({ id: "live", description: "the one" })];
     const h = harness(agents);
     h.press(DOWN); // active (main)
-    h.press(DOWN); // → the agent
-    h.press(ENTER); // opens overlay
+    h.press(DOWN); // arrows open the viewer
     expect(h.overlayOpened()).toBe(true);
     // The agent finishes, well past the linger window...
     agents[0] = makeRecord({ id: "live", description: "the one", status: "completed", completedAt: Date.now() - 60_000 });

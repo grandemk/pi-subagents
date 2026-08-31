@@ -2,8 +2,8 @@
  * fleet-list.ts — Claude Code-style "FleetView" list rendered below the editor.
  *
  * Shows `main` + each running/queued subagent as a navigable list. Pressing ↓ (or
- * ←) at an empty prompt activates the list; ↑/↓ move the selection (filled ● marker),
- * Enter opens the selected agent's live conversation overlay, Esc returns to the prompt.
+ * ←) at an empty prompt activates the list; ↑/↓ and ←/→ move the selection (filled ●
+ * marker) and show the selected agent's live conversation, while Esc returns to the prompt.
  * A viewer stays open when its agent finishes; finished agents linger briefly in the list.
  *
  * Mechanics (see plan): the list is a `belowEditor` widget (render-only), and ALL key
@@ -17,7 +17,7 @@ import type { AgentManager } from "../agent-manager.js";
 import type { AgentRecord } from "../types.js";
 import { getLifetimeTotal } from "../usage.js";
 import { type AgentActivity, type Theme } from "./agent-widget.js";
-import { ConversationViewer, VIEWPORT_HEIGHT_PCT } from "./conversation-viewer.js";
+import { ConversationViewer } from "./conversation-viewer.js";
 
 /** Widget key for the below-editor fleet list. */
 const FLEET_KEY = "fleet";
@@ -87,9 +87,13 @@ export class FleetList {
   private active = false;
   /** 0 = `main`, 1..N = subagents. */
   private selectedIndex = 0;
-  /** Set while a conversation overlay is open; calling it closes the overlay. */
+  /** Set while a conversation viewer is open; calling it closes the viewer. */
   private viewerClose: (() => void) | undefined;
+  /** Replaces the conversation displayed by the open viewer. */
+  private viewerSetAgent: ((record: AgentRecord) => void) | undefined;
   private viewingAgentId: string | undefined;
+  /** True when viewer navigation is returning to the parent (`main`) row. */
+  private returnToMain = false;
 
   constructor(
     private manager: AgentManager,
@@ -133,7 +137,9 @@ export class FleetList {
     this.inputUnsub?.();
     this.inputUnsub = undefined;
     if (this.viewerClose) { this.viewerClose(); this.viewerClose = undefined; }
+    this.viewerSetAgent = undefined;
     this.viewingAgentId = undefined;
+    this.returnToMain = false;
     if (this.ui && this.widgetRegistered) this.ui.setWidget(FLEET_KEY, undefined);
     this.widgetRegistered = false;
     this.tui = undefined;
@@ -180,8 +186,8 @@ export class FleetList {
 
   /**
    * Agents shown in the list, ordered earliest-launched first so the ones you
-   * started sooner sit at the top. Every row is openable (has a session), so Enter
-   * never dead-ends. Included: running/queued, plus the agent currently being
+   * started sooner sit at the top. Every agent row is openable (has a session),
+   * so arrow navigation never dead-ends. Included: running/queued, plus the agent currently being
    * viewed, plus recently-finished ones (they linger briefly before dropping out).
    * Pending agents with no session yet are hidden until they start.
    * (`listAgents()` is newest-first, so we re-sort.)
@@ -216,7 +222,7 @@ export class FleetList {
     // emits both, and matchesKey matches either) — act on press only, or every
     // tap would move/fire twice. Repeats still pass through for held-key nav.
     if (isKeyRelease(data)) return undefined;
-    // While an overlay is open, let it own all input.
+    // While a viewer is open, let it own all input.
     if (this.viewerClose) return undefined;
     // Input listeners fire BEFORE the focused component, and dialogs
     // (ctx.ui.select/confirm/input, pi's own menus) swap the prompt editor out
@@ -239,21 +245,24 @@ export class FleetList {
       return undefined;
     }
 
-    // Active — arrows navigate, Enter opens, Esc / Up-past-top exits.
-    if (matchesKey(data, "down")) {
+    // Active — arrows navigate and show the selected conversation. Esc / Up-past-top exits.
+    if (matchesKey(data, "down") || matchesKey(data, "right")) {
       const max = this.roster().length - 1;
       this.selectedIndex = Math.min(max, this.selectedIndex + 1);
       this.update();
+      this.openSelected();
       return { consume: true };
     }
-    if (matchesKey(data, "up")) {
+    if (matchesKey(data, "up") || matchesKey(data, "left")) {
       if (this.selectedIndex === 0) { this.deactivate(); return { consume: true }; }
       this.selectedIndex -= 1;
       this.update();
+      this.openSelected();
       return { consume: true };
     }
     if (matchesKey(data, "escape")) { this.deactivate(); return { consume: true }; }
-    if (matchesKey(data, Key.enter)) { this.openSelected(); return { consume: true }; }
+    // Selection is driven by arrows; Enter is intentionally a no-op.
+    if (matchesKey(data, Key.enter)) return { consume: true };
 
     // Any other key cancels navigation and flows to the editor.
     this.deactivate();
@@ -264,12 +273,12 @@ export class FleetList {
    * True when pi's prompt editor owns the keyboard. pi's editor is an `Editor`
    * subclass (CustomEditor) while every dialog/selector is not, and the loader
    * aliases pi-tui to pi's own copy, so `instanceof` is a reliable identity
-   * check. `focusedComponent` is TUI-private (no public accessor), hence the
-   * best-effort peek: unknowable focus (no tui seen yet, nothing focused)
-   * counts as the editor so activation keeps working.
+   * check. An unknown focus (no tui seen yet, nothing focused) counts as the
+   * editor so activation keeps working.
    */
   private editorHasFocus(): boolean {
-    const focused = (this.tui as { focusedComponent?: unknown } | undefined)?.focusedComponent;
+    const tui = this.tui as { getFocusedComponent?: () => unknown; focusedComponent?: unknown } | undefined;
+    const focused = tui?.getFocusedComponent?.() ?? tui?.focusedComponent;
     return focused == null || focused instanceof Editor;
   }
 
@@ -295,43 +304,86 @@ export class FleetList {
     const session = record.session;
     const activity = this.agentActivity.get(record.id);
     this.viewingAgentId = record.id;
+    this.returnToMain = false;
 
     void this.ui.custom<undefined>(
       (tui, theme, keybindings, done) => {
         this.viewerClose = () => done(undefined);
-        return new ConversationViewer(
+        let viewer: ConversationViewer;
+        const closeToMain = () => {
+          this.returnToMain = true;
+          done(undefined);
+        };
+        viewer = new ConversationViewer(
           tui,
           session,
           record,
           activity,
           theme,
-          done,
+          closeToMain,
           () => {
-            if (this.manager.abort(record.id)) this.ui?.notify(`Stopped "${record.description}".`, "info");
+            const activeId = this.viewingAgentId ?? record.id;
+            const activeRecord = this.agentRecords().find(agent => agent.id === activeId);
+            if (this.manager.abort(activeId)) this.ui?.notify(`Stopped "${activeRecord?.description ?? record.description}".`, "info");
           },
           keybindings,
-          (message: string) => this.manager.steer(record.id, message),
+          (message: string) => this.manager.steer(this.viewingAgentId ?? record.id, message),
+          direction => this.navigateViewer(direction),
         );
+        this.viewerSetAgent = next => {
+          if (next.session) viewer.setAgent(next.session, next, this.agentActivity.get(next.id));
+        };
+        return viewer;
       },
       {
-        overlay: true,
-        overlayOptions: { anchor: "center", width: "90%", maxHeight: `${VIEWPORT_HEIGHT_PCT}%` },
+        // Replace the editor rather than opening a modal overlay. This keeps
+        // the subagent transcript in pi's normal flow and lets Esc restore the
+        // parent editor.
+        overlay: false,
       },
     ).then(() => this.clearViewer(), () => this.clearViewer());
   }
 
-  /** Reset overlay state and return to the list (on close, auto-close, or error). */
+  private navigateViewer(direction: -1 | 1): void {
+    const records = this.agentRecords();
+    const current = records.findIndex(record => record.id === this.viewingAgentId);
+    const next = records[current + direction];
+    if (!next?.session) {
+      // The parent is immediately above the first subagent in FleetView.
+      if (direction === -1 && current === 0) {
+        this.returnToMain = true;
+        this.viewerClose?.();
+      }
+      return;
+    }
+    if (!this.viewerSetAgent) return;
+    this.viewingAgentId = next.id;
+    // The list remains visible below the replacement editor. Keep its marker in
+    // sync with the conversation currently shown, not just with the initial
+    // selection used to open the viewer.
+    const nextIndex = this.roster().findIndex(entry => entry.kind === "agent" && entry.record.id === next.id);
+    if (nextIndex >= 0) this.selectedIndex = nextIndex;
+    this.viewerSetAgent(next);
+  }
+
+  /** Reset viewer state and return to the parent flow (on close or error). */
   private clearViewer(): void {
     // Keep the cursor on the agent we were viewing — re-resolve by id so it
     // still feels natural if the list reordered (an earlier agent finished)
-    // while the overlay was open. If that agent is gone, leave the index for
+    // while the viewer was open. If that agent is gone, leave the index for
     // update()'s clamp to settle.
-    if (this.viewingAgentId) {
+    if (this.returnToMain) {
+      this.selectedIndex = 0;
+      this.returnToMain = false;
+    } else if (this.viewingAgentId) {
       const idx = this.roster().findIndex(e => e.kind === "agent" && e.record.id === this.viewingAgentId);
       if (idx >= 0) this.selectedIndex = idx;
     }
     this.viewerClose = undefined;
+    this.viewerSetAgent = undefined;
     this.viewingAgentId = undefined;
+    this.returnToMain = false;
+    this.active = false;
     this.update();
   }
 
@@ -345,7 +397,7 @@ export class FleetList {
     const sel = Math.min(this.selectedIndex, agents.length);
 
     const hint = this.active
-      ? "↑↓ select · enter view · esc back"
+      ? "↑↓/←→ select · esc back"
       : "esc to interrupt · ← for agents · ↓ to manage";
     const lines: string[] = [];
     lines.push(truncateToWidth("  " + theme.fg("dim", hint), width));

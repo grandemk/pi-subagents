@@ -2269,21 +2269,37 @@ Terse command-style prompts produce shallow, generic work.
       return;
     }
 
-    const { ConversationViewer, VIEWPORT_HEIGHT_PCT } = await import("./ui/conversation-viewer.js");
+    const { ConversationViewer } = await import("./ui/conversation-viewer.js");
     const session = record.session;
     const activity = agentActivity.get(record.id);
+    let currentId = record.id;
 
     await ctx.ui.custom<undefined>(
       (tui, theme, keybindings, done) => {
-        return new ConversationViewer(tui, session, record, activity, theme, done, () => {
-          if (manager.abort(record.id)) {
-            ctx.ui.notify(`Stopped "${record.description}".`, "info");
+        const viewer = new ConversationViewer(tui, session, record, activity, theme, done, () => {
+          const current = manager.listAgents().find(agent => agent.id === currentId);
+          if (manager.abort(currentId)) {
+            ctx.ui.notify(`Stopped "${current?.description ?? record.description}".`, "info");
           }
-        }, keybindings, (message: string) => manager.steer(record.id, message));
+        }, keybindings, (message: string) => manager.steer(currentId, message), direction => {
+          const records = manager.listAgents()
+            .filter(agent => !agent.parentAgentId && agent.session)
+            .sort((a, b) => a.startedAt - b.startedAt);
+          const index = records.findIndex(agent => agent.id === currentId);
+          const next = records[index + direction];
+          if (!next?.session) {
+            // The parent flow is immediately above the first agent.
+            if (direction === -1 && index === 0) done(undefined);
+            return;
+          }
+          currentId = next.id;
+          viewer.setAgent(next.session, next, agentActivity.get(next.id));
+        });
+        return viewer;
       },
       {
-        overlay: true,
-        overlayOptions: { anchor: "center", width: "90%", maxHeight: `${VIEWPORT_HEIGHT_PCT}%` },
+        // Use pi's normal editor slot; Esc restores the parent editor.
+        overlay: false,
       },
     );
   }

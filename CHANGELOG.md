@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The subagent conversation viewer now uses pi's native transcript flow.** User, assistant, Markdown, tool, and bash output render like the normal flow instead of the bespoke bordered overlay. While viewing an agent, `↑`/`↓` and `←`/`→` switch between sibling agents, and moving up/left above the first agent or pressing `Esc` restores the parent editor and selects `main`; the FleetView marker follows the conversation shown. From the FleetView, arrow navigation now opens the selected agent immediately, so `Enter` is no longer needed and has no effect while selecting.
+
 ## [0.17.0] - 2026-08-17
 
 > **⚠️ Note — an agent file's frontmatter `name:` now substitutes for the filename as its `subagent_type`.** Following Claude Code, the declared name is the dispatch identity and the filename is only the fallback, so `blubb.md` with `name: code-review` is spawned, mentioned and listed as `code-review`. Any value is accepted except one containing `:`, which Claude Code reserves for plugin scoping; such a file — like any unparseable one — is skipped with a warning rather than loaded under a name nothing honours, and `strictAgentFiles` turns that into a startup failure.

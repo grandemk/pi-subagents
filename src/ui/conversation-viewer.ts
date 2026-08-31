@@ -1,12 +1,18 @@
 /**
- * conversation-viewer.ts — Live conversation overlay for viewing agent sessions.
+ * conversation-viewer.ts — Live conversation viewer for agent sessions.
  *
  * Displays a scrollable, live-updating view of an agent's conversation.
  * Subscribes to session events for real-time streaming updates.
  */
 
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
-import { type Component, Input, matchesKey, type TUI, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import {
+  AssistantMessageComponent,
+  BashExecutionComponent,
+  ToolExecutionComponent,
+  UserMessageComponent,
+} from "@earendil-works/pi-coding-agent";
+import { type Component, Container, Input, isKeyRelease, matchesKey, Spacer, Text, type TUI, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { renderAgentName } from "../agent-color.js";
 import { extractText } from "../context.js";
 import type { AgentRecord } from "../types.js";
@@ -15,10 +21,10 @@ import type { Theme } from "./agent-widget.js";
 import { type AgentActivity, buildInvocationTags, describeActivity, fgPreservingNestedStyles, formatDuration, formatSessionTokens, getPromptModeLabel } from "./agent-widget.js";
 import { createViewerKeys, type ViewerKeybindings, type ViewerKeys } from "./viewer-keys.js";
 
-/** Base lines consumed by chrome: top border + header + header sep + footer sep + footer + bottom border. */
-const CHROME_LINES_BASE = 6;
+/** Base lines consumed by the borderless viewer chrome: header + spacer + footer. */
+const CHROME_LINES_BASE = 3;
 const MIN_VIEWPORT = 3;
-/** Height ceiling shared by the overlay's `maxHeight` and the viewer's internal viewport cap. */
+/** Keep the transcript viewport from crowding the parent chat and footer. */
 export const VIEWPORT_HEIGHT_PCT = 70;
 
 export class ConversationViewer implements Component {
@@ -32,12 +38,15 @@ export class ConversationViewer implements Component {
   private keys: ViewerKeys;
   /** Steering composer — present while the user is typing a message to the agent. */
   private composer: Input | undefined;
+  private session: AgentSession;
+  private record: AgentRecord;
+  private activity: AgentActivity | undefined;
 
   constructor(
     private tui: TUI,
-    private session: AgentSession,
-    private record: AgentRecord,
-    private activity: AgentActivity | undefined,
+    session: AgentSession,
+    record: AgentRecord,
+    activity: AgentActivity | undefined,
     private theme: Theme,
     private done: (result: undefined) => void,
     /** Abort the agent shown here. Omitted → no stop affordance (e.g. read-only history). */
@@ -46,9 +55,32 @@ export class ConversationViewer implements Component {
     keybindings?: ViewerKeybindings,
     /** Send a steering message to the agent. Omitted → no compose affordance. */
     private onSteer?: (message: string) => void,
+    /** Move to the previous/next agent. Omitted when no roster is available. */
+    private onNavigate?: (direction: -1 | 1) => void,
   ) {
+    this.session = session;
+    this.record = record;
+    this.activity = activity;
     this.keys = createViewerKeys(keybindings);
-    this.unsubscribe = session.subscribe(() => {
+    this.subscribeToSession();
+  }
+
+  /** Replace the conversation shown by this viewer without closing the viewer. */
+  setAgent(session: AgentSession, record: AgentRecord, activity?: AgentActivity): void {
+    this.unsubscribe?.();
+    this.session = session;
+    this.record = record;
+    this.activity = activity;
+    this.scrollOffset = 0;
+    this.autoScroll = true;
+    this.stopArmed = false;
+    this.closed = false;
+    this.subscribeToSession();
+    this.tui.requestRender();
+  }
+
+  private subscribeToSession(): void {
+    this.unsubscribe = this.session.subscribe(() => {
       if (this.closed) return;
       this.tui.requestRender();
     });
@@ -62,10 +94,32 @@ export class ConversationViewer implements Component {
       this.tui.requestRender();
       return;
     }
+    if (isKeyRelease(data)) return;
 
     if (matchesKey(data, "escape") || matchesKey(data, "q")) {
       this.closed = true;
       this.done(undefined);
+      return;
+    }
+
+    // When a roster is available, up/down move between conversations. At the
+    // first agent, the roster callback returns to the parent flow. Keep
+    // left/right as aliases for sibling navigation for users who learned the
+    // original viewer controls.
+    if (this.onNavigate && matchesKey(data, "up")) {
+      this.navigate(-1);
+      return;
+    }
+    if (this.onNavigate && matchesKey(data, "down")) {
+      this.navigate(1);
+      return;
+    }
+    if (matchesKey(data, "left")) {
+      this.navigate(-1);
+      return;
+    }
+    if (matchesKey(data, "right")) {
+      this.navigate(1);
       return;
     }
 
@@ -94,7 +148,7 @@ export class ConversationViewer implements Component {
     }
     if (this.stopArmed) this.stopArmed = false;
 
-    const totalLines = this.buildContentLines(this.lastInnerW).length;
+    const totalLines = this.currentContentLines(this.lastInnerW).length;
     const viewportHeight = this.viewportHeight();
     const maxScroll = Math.max(0, totalLines - viewportHeight);
 
@@ -120,105 +174,13 @@ export class ConversationViewer implements Component {
   }
 
   render(width: number): string[] {
-    if (width < 6) return []; // too narrow for any meaningful rendering
-    const th = this.theme;
-    const innerW = width - 4; // border + padding
-    this.lastInnerW = innerW;
-    const lines: string[] = [];
+    return this.renderNative(width);
+  }
 
-    const pad = (s: string, len: number) => {
-      const vis = visibleWidth(s);
-      return s + " ".repeat(Math.max(0, len - vis));
-    };
-    const row = (content: string) =>
-      th.fg("border", "│") + " " + truncateToWidth(pad(content, innerW), innerW, "...", true) + " " + th.fg("border", "│");
-    const hrTop = th.fg("border", `╭${"─".repeat(width - 2)}╮`);
-    const hrBot = th.fg("border", `╰${"─".repeat(width - 2)}╯`);
-    const hrMid = row(th.fg("dim", "─".repeat(innerW)));
-
-    // Header
-    lines.push(hrTop);
-    const modeLabel = getPromptModeLabel(this.record.type);
-    const modeTag = modeLabel ? ` ${th.fg("dim", `(${modeLabel})`)}` : "";
-    const statusIcon = this.record.status === "running"
-      ? th.fg("accent", "●")
-      : this.record.status === "completed"
-        ? th.fg("success", "✓")
-        : this.record.status === "error"
-          ? th.fg("error", "✗")
-          : th.fg("dim", "○");
-    const duration = formatDuration(this.record.startedAt, this.record.completedAt);
-
-    const headerParts: string[] = [duration];
-    const toolUses = this.activity?.toolUses ?? this.record.toolUses;
-    if (toolUses > 0) headerParts.unshift(`${toolUses} tool${toolUses === 1 ? "" : "s"}`);
-    const tokens = getLifetimeTotal(this.activity?.lifetimeUsage);
-    if (tokens > 0) {
-      const percent = getSessionContextPercent(this.activity?.session);
-      headerParts.push(formatSessionTokens(tokens, percent, th, this.record.compactionCount));
-    }
-
-    lines.push(row(
-      `${statusIcon} ${renderAgentName(this.record.type, th, { bold: true })}${modeTag}  ${th.fg("muted", this.record.description)} ${th.fg("dim", "·")} ${fgPreservingNestedStyles(th, "dim", headerParts.join(" · "))}`,
-    ));
-    const invocationLine = this.invocationLine();
-    if (invocationLine) lines.push(row(invocationLine));
-    lines.push(hrMid);
-
-    // Content area — rebuild every render (live data, no cache needed)
-    const contentLines = this.buildContentLines(innerW);
-    const viewportHeight = this.viewportHeight();
-    const maxScroll = Math.max(0, contentLines.length - viewportHeight);
-
-    if (this.autoScroll) {
-      this.scrollOffset = maxScroll;
-    }
-
-    const visibleStart = Math.min(this.scrollOffset, maxScroll);
-    const visible = contentLines.slice(visibleStart, visibleStart + viewportHeight);
-
-    for (let i = 0; i < viewportHeight; i++) {
-      lines.push(row(visible[i] ?? ""));
-    }
-
-    // Footer
-    lines.push(hrMid);
-    if (this.composer) {
-      // Composer row: the Input renders its own `> ` prompt and cursor.
-      lines.push(row(this.composer.render(innerW)[0] ?? ""));
-      const composeHint = th.fg("dim", "Enter send · Esc cancel");
-      const composeLeft = th.fg("accent", "✎ steer");
-      const composeGap = Math.max(1, innerW - visibleWidth(composeLeft) - visibleWidth(composeHint));
-      lines.push(row(composeLeft + " ".repeat(composeGap) + composeHint));
-    } else {
-      // Actions on the left, navigation on the right. The scroll hint keeps its
-      // full key list so the less-obvious bindings stay discoverable; it leads
-      // the right group so "Esc close" is the only part that truncates first.
-      const sep = th.fg("dim", " · ");
-      const actions: string[] = [];
-      if (this.canSteer()) actions.push(th.fg("dim", "Enter steer"));
-      if (this.isStoppable()) {
-        actions.push(this.stopArmed ? th.fg("error", "x again to STOP") : th.fg("dim", "x stop"));
-      }
-      const footerRight = th.fg("dim", "↑↓ scroll · PgUp/PgDn or Shift+↑↓ · Esc close");
-
-      // Prepend the line-count/scroll-% readout only when there's spare width —
-      // it's the first thing dropped so it never crowds out the hints.
-      const scrollPct = contentLines.length <= viewportHeight
-        ? "100%"
-        : `${Math.round(((visibleStart + viewportHeight) / contentLines.length) * 100)}%`;
-      const count = th.fg("dim", `${contentLines.length} lines · ${scrollPct}`);
-      const withCount = [count, ...actions].join(sep);
-      const footerLeft = visibleWidth(withCount) + visibleWidth(footerRight) + 1 <= innerW
-        ? withCount
-        : actions.join(sep);
-
-      const footerGap = Math.max(1, innerW - visibleWidth(footerLeft) - visibleWidth(footerRight));
-      lines.push(row(footerLeft + " ".repeat(footerGap) + footerRight));
-    }
-    lines.push(hrBot);
-
-    return lines;
+  /** Navigate and clear a pending stop confirmation from the previous agent. */
+  private navigate(direction: -1 | 1): void {
+    this.stopArmed = false;
+    this.onNavigate?.(direction);
   }
 
   /** Stoppable only when a stop handler exists and the agent is still active. */
@@ -249,7 +211,135 @@ export class ConversationViewer implements Component {
     this.tui.requestRender();
   }
 
-  invalidate(): void { /* no cached state to clear */ }
+  /** Render a viewport around pi's native conversation components. */
+  private renderNative(width: number): string[] {
+    if (width < 6) return [];
+    this.lastInnerW = width;
+    const th = this.theme;
+    const lines: string[] = [];
+    const modeLabel = getPromptModeLabel(this.record.type);
+    const modeTag = modeLabel ? ` ${th.fg("dim", `(${modeLabel})`)}` : "";
+    const statusIcon = this.record.status === "running"
+      ? th.fg("accent", "●")
+      : this.record.status === "completed"
+        ? th.fg("success", "✓")
+        : this.record.status === "error"
+          ? th.fg("error", "✗")
+          : th.fg("dim", "○");
+    const headerParts = [formatDuration(this.record.startedAt, this.record.completedAt)];
+    const toolUses = this.activity?.toolUses ?? this.record.toolUses;
+    if (toolUses > 0) headerParts.unshift(`${toolUses} tool${toolUses === 1 ? "" : "s"}`);
+    const tokens = getLifetimeTotal(this.activity?.lifetimeUsage);
+    if (tokens > 0) {
+      const percent = getSessionContextPercent(this.activity?.session);
+      headerParts.push(formatSessionTokens(tokens, percent, th, this.record.compactionCount));
+    }
+
+    lines.push(truncateToWidth(
+      `${statusIcon} ${renderAgentName(this.record.type, th, { bold: true })}${modeTag}  ${th.fg("muted", this.record.description)} ${th.fg("dim", "·")} ${fgPreservingNestedStyles(th, "dim", headerParts.join(" · "))}`,
+      width,
+    ));
+    const invocationLine = this.invocationLine();
+    if (invocationLine) lines.push(truncateToWidth(invocationLine, width));
+
+    const contentLines = this.currentContentLines(width);
+    const viewportHeight = this.viewportHeight();
+    const maxScroll = Math.max(0, contentLines.length - viewportHeight);
+    if (this.autoScroll) this.scrollOffset = maxScroll;
+    const visibleStart = Math.min(this.scrollOffset, maxScroll);
+    lines.push(...contentLines.slice(visibleStart, visibleStart + viewportHeight));
+    while (lines.length < 1 + (invocationLine ? 1 : 0) + viewportHeight) lines.push("");
+
+    if (this.composer) {
+      lines.push("");
+      lines.push(truncateToWidth(this.composer.render(width)[0] ?? "", width));
+      lines.push(truncateToWidth(th.fg("dim", "Enter send · Esc cancel"), width));
+    } else {
+      lines.push("");
+      const actions: string[] = [];
+      if (this.canSteer()) actions.push(th.fg("dim", "Enter steer"));
+      if (this.isStoppable()) {
+        actions.push(this.stopArmed ? th.fg("error", "x again to STOP") : th.fg("dim", "x stop"));
+      }
+      const navigation = this.onNavigate ? "↑↓ agents · ←→ agents" : "";
+      const scroll = this.onNavigate ? "k/j scroll" : "↑↓ scroll";
+      const footer = [navigation, scroll, "PgUp/PgDn", "Esc parent", ...actions]
+        .filter(Boolean)
+        .join(th.fg("dim", " · "));
+      lines.push(truncateToWidth(th.fg("dim", footer), width));
+    }
+    return lines.map(line => {
+      const clamped = truncateToWidth(line, width);
+      return clamped + " ".repeat(Math.max(0, width - visibleWidth(clamped)));
+    });
+  }
+
+  private currentContentLines(width: number): string[] {
+    try {
+      return this.buildNativeContentLines(width);
+    } catch {
+      // Unit-test hosts and older pi embeddings may not initialize the native
+      // transcript theme. Keep the viewer usable with the safe text renderer.
+      return this.buildContentLines(width);
+    }
+  }
+
+  /** Build messages with the same components used by pi's normal transcript. */
+  private buildNativeContentLines(width: number): string[] {
+    const container = new Container();
+    const pendingTools = new Map<string, ToolExecutionComponent>();
+    let firstUser = true;
+
+    for (const message of this.session.messages) {
+      if (message.role === "user") {
+        const text = typeof message.content === "string" ? message.content : extractText(message.content);
+        if (!text.trim()) continue;
+        if (!firstUser) container.addChild(new Spacer(1));
+        container.addChild(new UserMessageComponent(text.trim()));
+        firstUser = false;
+      } else if (message.role === "assistant") {
+        container.addChild(new AssistantMessageComponent(message));
+        for (const content of message.content) {
+          if (content.type !== "toolCall") continue;
+          const toolCallId = content.id;
+          const tool = new ToolExecutionComponent(
+            content.name,
+            toolCallId,
+            content.arguments,
+            undefined,
+            undefined,
+            this.tui,
+            process.cwd(),
+          );
+          container.addChild(tool);
+          pendingTools.set(toolCallId, tool);
+        }
+      } else if (message.role === "toolResult") {
+        const tool = pendingTools.get(message.toolCallId);
+        if (tool) tool.updateResult(message);
+      } else if (message.role === "bashExecution") {
+        const bash = new BashExecutionComponent(message.command ?? "", this.tui, message.excludeFromContext);
+        if (message.output) bash.appendOutput(message.output);
+        if (message.exitCode !== undefined || message.cancelled) {
+          bash.setComplete(message.exitCode, message.cancelled);
+        }
+        container.addChild(bash);
+      }
+    }
+
+    if (this.record.status === "running" && this.activity) {
+      const activity = describeActivity(this.activity.activeTools, this.activity.responseText);
+      container.addChild(new Spacer(1));
+      container.addChild(new Text(this.theme.fg("dim", activity), 0, 0));
+    }
+
+    if (container.children.length === 0) {
+      return [this.theme.fg("dim", "(waiting for first message...)")];
+    }
+    return container.render(width).map(line => truncateToWidth(line, width));
+  }
+
+  invalidate(): void { /* native components are rebuilt from live session messages */ }
 
   dispose(): void {
     this.closed = true;
@@ -262,8 +352,7 @@ export class ConversationViewer implements Component {
   // ---- Private ----
 
   private viewportHeight(): number {
-    // Cap mirrors the overlay's maxHeight — otherwise the viewer would render
-    // more lines than the overlay shows and clip the footer.
+    // Keep the transcript from crowding the parent flow and clipping the footer.
     const maxRows = Math.floor((this.tui.terminal.rows * VIEWPORT_HEIGHT_PCT) / 100);
     return Math.max(MIN_VIEWPORT, maxRows - this.chromeLines());
   }
