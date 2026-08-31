@@ -24,6 +24,9 @@ function makePi() {
         tools.set(tool.name, tool);
       }),
       registerCommand: vi.fn(),
+      registerEntryRenderer: vi.fn(),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       on: vi.fn((event: string, handler: any) => {
         handlers.set(event, handler);
       }),
@@ -132,6 +135,40 @@ describe("toolDescriptionMode", () => {
       "self-contained",
     ]) {
       expect(desc).toContain(contract);
+    }
+  });
+
+  // The compact test above pins the prose alone, which is right for compact —
+  // it is the only place that mode states these. `full` is different: several
+  // contracts are stated twice, in the description AND in the param schema, so
+  // pinning prose alone would block a legitimate move of one into the other
+  // while missing the failure that actually matters — a contract that ends up
+  // in neither. Asserting over description + schema is the invariant that
+  // survives either choice. The second test then keeps the schema half honest,
+  // so "it's also in the schema" can never degrade to an empty stub.
+  it("full states every load-bearing contract in the description or the schema", () => {
+    const tool = setup().get("Agent");
+    const visible = `${tool.description}\n${JSON.stringify(tool.parameters)}`;
+    for (const contract of [
+      "run_in_background",
+      "resume",
+      "steer_subagent",
+      "worktree",
+      ".pi/agents/",
+      "self-contained",
+      "model",
+      "thinking",
+      "inherit_context",
+    ]) {
+      expect(visible).toContain(contract);
+    }
+  });
+
+  it("every strategy param carries a real description of its own", () => {
+    const props = setup().get("Agent").parameters?.properties ?? {};
+    for (const name of ["run_in_background", "model", "thinking", "inherit_context"]) {
+      // Long enough to be an explanation the model can act on, not a bare label.
+      expect(props[name]?.description?.length ?? 0).toBeGreaterThan(40);
     }
   });
 

@@ -1117,6 +1117,20 @@ Good body.`);
       expect(loaded.isolation).toBe("worktree");
     });
 
+    // The writer used to emit `run_in_background` only when truthy, so an
+    // explicit `false` was dropped. Harmless while foreground was the default
+    // and omission meant the same thing — but with `backgroundByDefault` on,
+    // dropping it flips the ejected agent to background.
+    it("preserves an explicit run_in_background: false instead of dropping it", () => {
+      expect(roundTrip({ runInBackground: false }).runInBackground).toBe(false);
+    });
+
+    it("leaves run_in_background unset when the config doesn't pin it", () => {
+      // Absent must stay absent — writing a value would freeze the agent
+      // against the setting rather than letting it follow the default.
+      expect(roundTrip({}).runInBackground).toBeUndefined();
+    });
+
     it("preserves the extension and skill list fields", () => {
       // These serialize as bare CSV and are re-parsed by parseExtensionsSpec /
       // the skills field. A generate/parse mismatch here is silent: the ejected

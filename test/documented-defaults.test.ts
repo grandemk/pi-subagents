@@ -38,14 +38,41 @@ describe("documented defaults (README:441)", () => {
     expect(getMaxSubagentDepth()).toBe(2);
   });
 
-  it("background concurrency defaults to 4", async () => {
+  // Raised from 4 when top-level spawns started defaulting to background:
+  // foreground bypasses the pool entirely, so a limit tuned for opt-in
+  // background would now queue the tail of ordinary parallel fan-outs.
+  it("background concurrency defaults to 10", async () => {
     const { AgentManager } = await import("../src/agent-manager.js");
     const manager = new AgentManager();
     try {
-      expect(manager.getMaxConcurrent()).toBe(4);
+      expect(manager.getMaxConcurrent()).toBe(10);
     } finally {
       manager.dispose();
     }
+  });
+
+  // Off, not a number: nothing here ever bounded foreground work, and pi runs a
+  // message's tool calls through Promise.all, so any default above 0 would be a
+  // behaviour change for everyone rather than an opt-in for #253's reporter.
+  it("foreground concurrency is unlimited by default", async () => {
+    const { AgentManager } = await import("../src/agent-manager.js");
+    const manager = new AgentManager();
+    try {
+      expect(manager.getMaxConcurrentForeground()).toBe(0);
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it("top-level spawns default to background, nested spawns to foreground", async () => {
+    const { resolveAgentInvocationConfig } = await import("../src/invocation-config.js");
+    // The setting's default (true) is what index.ts passes for top-level calls.
+    expect(resolveAgentInvocationConfig(undefined, {}, { defaultRunInBackground: true }).runInBackground).toBe(true);
+    // nested-tools.ts passes false unconditionally.
+    expect(resolveAgentInvocationConfig(undefined, {}, { defaultRunInBackground: false }).runInBackground).toBe(false);
+    // An explicit param still wins over either default.
+    expect(resolveAgentInvocationConfig(undefined, { run_in_background: false }, { defaultRunInBackground: true }).runInBackground).toBe(false);
+    expect(resolveAgentInvocationConfig(undefined, { run_in_background: true }, { defaultRunInBackground: false }).runInBackground).toBe(true);
   });
 
   it("model scope is off by default", async () => {

@@ -122,7 +122,7 @@ describe("ConversationViewer custom keybindings", () => {
     } as AgentRecord;
     const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as any;
     const viewer = new ConversationViewer(
-      tui, session, record, undefined, theme, done, undefined, undefined, undefined, onNavigate,
+      tui, session, record, undefined, theme, done, undefined, undefined, undefined, false, undefined, undefined, onNavigate,
     );
 
     viewer.handleInput(UP);

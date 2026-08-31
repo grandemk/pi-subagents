@@ -41,6 +41,9 @@ function makePi() {
     registerMessageRenderer: vi.fn(),
     registerTool: vi.fn((t: any) => tools.set(t.name, t)),
     registerCommand: vi.fn(),
+    registerEntryRenderer: vi.fn(),
+    registerFlag: vi.fn(),
+    getFlag: vi.fn(),
     on: vi.fn((event: string, handler: any) => lifecycle.set(event, handler)),
     events: {
       emit: vi.fn(),
@@ -89,6 +92,7 @@ async function runForegroundSteeredAgent(tools: Map<string, any>) {
       description: "Locate organization-scope changes",
       subagent_type: "Explore",
       max_turns: 20,
+      run_in_background: false,
     },
     undefined,
     undefined,

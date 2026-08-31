@@ -83,6 +83,30 @@ describe("AgentManager — record GC", () => {
     expect(dispose).toHaveBeenCalled();
   });
 
+  it("closes the evicted session's extension lifecycle before disposing it (#242)", async () => {
+    // The reported crash, on its own path: this sweep is what fires ~10 min after a
+    // subagent finishes. Disposing only invalidates the ExtensionRunner, so whatever
+    // an extension armed in `session_start` stayed armed — and its next tick threw
+    // `assertActive()` from a bare timer callback, killing interactive pi.
+    manager = new AgentManager();
+    const { id, record } = await settled("stale");
+    const emit = vi.fn(async () => {});
+    const dispose = vi.fn();
+    record.session = {
+      dispose,
+      extensionRunner: { hasHandlers: (event: string) => event === "session_shutdown", emit },
+    } as any;
+    record.completedAt = Date.now() - (TEN_MINUTES + 30_000);
+
+    await vi.advanceTimersByTimeAsync(TICK);
+
+    expect(manager.getRecord(id)).toBeUndefined();
+    expect(emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
+    // After dispose() the runner is invalidated and every ctx getter throws, so an
+    // emit that landed afterwards would be worse than none.
+    expect(emit.mock.invocationCallOrder[0]).toBeLessThan(dispose.mock.invocationCallOrder[0]);
+  });
+
   it("never evicts a running agent, however old its timestamp looks", async () => {
     // A live agent's session being disposed mid-run is the worst failure this
     // guard prevents, and `completedAt` on a running record is meaningless.

@@ -33,6 +33,9 @@ const {
 
 vi.mock("@earendil-works/pi-coding-agent", () => ({
   createAgentSession,
+  // Identity, as pi's own is: `defineTool` exists for the type inference, and
+  // the structured-output tool is built through it.
+  defineTool: (definition: unknown) => definition,
   // Mock loader simulates pi-mono: reload() applies additionalExtensionPaths
   // (an unknown path becomes an error row, mirroring a failed load) and then
   // runs extensionsOverride over the result.
@@ -127,6 +130,7 @@ import {
   parseExtensionsSpec,
   parseExtSelectors,
   resolveDefaultModel,
+  resolveEffectiveMaxTurns,
   resumeAgent,
   runAgent,
   SUBAGENT_TOOL_NAMES,
@@ -134,6 +138,7 @@ import {
   setGraceTurns,
   setRememberAgents,
 } from "../src/agent-runner.js";
+import { compileJsonSchema } from "../src/workflow/json-schema.js";
 
 /** The most recent session built by `createSession` — read by `lastToolsPassed()`. */
 let lastSession: ReturnType<typeof createSession>["session"] | undefined;
@@ -269,6 +274,31 @@ describe("agent-runner final output capture", () => {
 
     await runAgent(ctx, "Explore", "Say ISOLATED", { pi });
     expect(vi.mocked(buildAgentPrompt).mock.lastCall![4]).not.toHaveProperty("worktreeBase");
+  });
+
+  it("marks a workflow child so its prompt says the final text is the return value", async () => {
+    const { buildAgentPrompt } = await import("../src/prompts.js");
+    const { session } = createSession("RAW");
+    createAgentSession.mockResolvedValue({ session });
+
+    await runAgent(ctx, "Explore", "List the files", { pi, workflow: true });
+    expect(vi.mocked(buildAgentPrompt).mock.lastCall![4]).toMatchObject({ workflowChild: true });
+
+    await runAgent(ctx, "Explore", "List the files", { pi });
+    expect(vi.mocked(buildAgentPrompt).mock.lastCall![4]).not.toHaveProperty("workflowChild");
+  });
+
+  it("leaves the block off a schema-bearing child, which answers through StructuredOutput", async () => {
+    const { buildAgentPrompt } = await import("../src/prompts.js");
+    const { session } = createSession("RAW");
+    createAgentSession.mockResolvedValue({ session });
+
+    await runAgent(ctx, "Explore", "List the files", {
+      pi,
+      workflow: true,
+      structuredOutput: { schema: { type: "object" }, check: () => true },
+    });
+    expect(vi.mocked(buildAgentPrompt).mock.lastCall![4]).not.toHaveProperty("workflowChild");
   });
 
   it("passes the parent model runtime while retaining the legacy model registry", async () => {
@@ -525,11 +555,11 @@ describe("agent-runner usage callback wiring", () => {
     const { session, listeners } = createSession("OK");
     createAgentSession.mockResolvedValue({ session });
 
-    const seen: Array<{ input: number; output: number; cacheWrite: number }> = [];
+    const seen: Array<{ input: number; output: number; cacheWrite: number; cost?: number }> = [];
     session.prompt = vi.fn(async () => {
       // Two assistant messages over the run
-      emitMessageEnd(listeners, { input: 100, output: 50, cacheWrite: 10 });
-      emitMessageEnd(listeners, { input: 200, output: 80, cacheWrite: 20 });
+      emitMessageEnd(listeners, { input: 100, output: 50, cacheWrite: 10, cacheRead: 900, cost: { total: 0.002 } });
+      emitMessageEnd(listeners, { input: 200, output: 80, cacheWrite: 20, cacheRead: 1800, cost: { total: 0.004 } });
       session.messages.push({ role: "assistant", content: [{ type: "text", text: "OK" }] });
     });
 
@@ -538,9 +568,11 @@ describe("agent-runner usage callback wiring", () => {
       onAssistantUsage: (u) => seen.push(u),
     });
 
+    // cacheRead rides along even though the display total drops it (#38): the
+ // prefix is genuinely re-billed per call, and the parent-session report needs it.
     expect(seen).toEqual([
-      { input: 100, output: 50, cacheWrite: 10 },
-      { input: 200, output: 80, cacheWrite: 20 },
+      { input: 100, output: 50, cacheWrite: 10, cacheRead: 900, cost: 0.002 },
+      { input: 200, output: 80, cacheWrite: 20, cacheRead: 1800, cost: 0.004 },
     ]);
   });
 
@@ -550,7 +582,7 @@ describe("agent-runner usage callback wiring", () => {
 
     const seen: any[] = [];
     session.prompt = vi.fn(async () => {
-      emitMessageEnd(listeners, { input: 50 }); // output, cacheWrite missing
+      emitMessageEnd(listeners, { input: 50 }); // output, cacheWrite, cacheRead, cost missing
       session.messages.push({ role: "assistant", content: [{ type: "text", text: "OK" }] });
     });
 
@@ -559,7 +591,9 @@ describe("agent-runner usage callback wiring", () => {
       onAssistantUsage: (u) => seen.push(u),
     });
 
-    expect(seen).toEqual([{ input: 50, output: 0, cacheWrite: 0 }]);
+    // An unpriced model reports no `cost` object at all — 0, never undefined,
+    // so accumulators never have to special-case it.
+    expect(seen).toEqual([{ input: 50, output: 0, cacheWrite: 0, cacheRead: 0, cost: 0 }]);
   });
 
   it("runAgent skips the callback when message_end has no usage field", async () => {
@@ -582,7 +616,7 @@ describe("agent-runner usage callback wiring", () => {
     const seen: any[] = [];
 
     session.prompt = vi.fn(async () => {
-      emitMessageEnd(listeners, { input: 10, output: 20, cacheWrite: 5 });
+      emitMessageEnd(listeners, { input: 10, output: 20, cacheWrite: 5, cacheRead: 90, cost: { total: 0.001 } });
       session.messages.push({ role: "assistant", content: [{ type: "text", text: "RESUMED" }] });
     });
 
@@ -590,7 +624,7 @@ describe("agent-runner usage callback wiring", () => {
       onAssistantUsage: (u) => seen.push(u),
     });
 
-    expect(seen).toEqual([{ input: 10, output: 20, cacheWrite: 5 }]);
+    expect(seen).toEqual([{ input: 10, output: 20, cacheWrite: 5, cacheRead: 90, cost: 0.001 }]);
   });
 
   it("forwards compaction_end events to onCompaction (only when not aborted)", async () => {
@@ -795,6 +829,31 @@ function mockRegistry(opts: Record<string, any>): string[] {
  * asserting on it means these tests exercise the narrowing rather than a
  * reimplementation of pi's gate.
  */
+/** A compiled schema for the structured-output tests. */
+const STRUCTURED = (() => {
+  const compilation = compileJsonSchema({
+    type: "object",
+    properties: { answer: { type: "string" } },
+    required: ["answer"],
+  });
+  if (!compilation.ok) throw new Error(compilation.message);
+  return compilation.compiled;
+})();
+
+/** One of the tools injected into the session as `customTools`, by name. */
+function customTool(name: string): { execute(id: string, params: unknown): Promise<unknown> } {
+  const opts = createAgentSession.mock.calls[0][0];
+  const tool = ((opts.customTools ?? []) as { name: string }[]).find(t => t.name === name);
+  if (!tool) throw new Error(`no customTool named ${name}`);
+  return tool as unknown as { execute(id: string, params: unknown): Promise<unknown> };
+}
+
+/** Names of the tools injected into the session as `customTools`. */
+function customToolNames(): string[] {
+  const opts = createAgentSession.mock.calls[0][0];
+  return ((opts.customTools ?? []) as { name: string }[]).map(tool => tool.name);
+}
+
 function lastToolsPassed(): string[] {
   const opts = createAgentSession.mock.calls[0][0];
   if (opts.tools) return opts.tools;
@@ -1145,6 +1204,190 @@ describe("agent-runner master tool allowlist", () => {
       await expect(
         session.agent.beforeToolCall?.({ toolCall: { name: "steer_subagent" } }),
       ).resolves.not.toMatchObject({ block: true });
+    });
+
+    it("keeps StructuredOutput reachable with no tools: allowlist", async () => {
+      // The gate that would have silently killed this feature: `inScope` seeds
+      // `keep` from the built-in list, and a customTool is in neither that nor
+      // the extension registry — so without the re-admit it is narrowed out of
+      // the active set every turn and blocked at call time.
+      vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: true }));
+      vi.mocked(getAgentConfig).mockReturnValueOnce(makeAgentConfig({ extensions: true }));
+      vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
+      withExtensions({ "/ext/ok.ts": ["ok_ext"] });
+      const { session } = createSession("OK");
+      createAgentSession.mockResolvedValue({ session });
+
+      await runAgent(ctx, "Explore", "go", { pi, structuredOutput: STRUCTURED });
+
+      expect(customToolNames()).toContain("StructuredOutput");
+      await expect(
+        session.agent.beforeToolCall?.({ toolCall: { name: "StructuredOutput" } }),
+      ).resolves.not.toMatchObject({ block: true });
+    });
+
+    it("keeps StructuredOutput in the static allowlist when extensions are off", async () => {
+      // The other branch: `sessionTools` becomes a hard allowlist and pi drops
+      // any name missing from it out of the registry permanently.
+      vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: false }));
+      vi.mocked(getAgentConfig).mockReturnValueOnce(makeAgentConfig({ extensions: false }));
+      vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
+      const { session } = createSession("OK");
+      createAgentSession.mockResolvedValue({ session });
+
+      await runAgent(ctx, "Explore", "go", { pi, structuredOutput: STRUCTURED });
+
+      expect(lastToolsPassed()).toContain("StructuredOutput");
+      expect(customToolNames()).toContain("StructuredOutput");
+    });
+
+    it("does not let disallowed_tools remove StructuredOutput", async () => {
+      // A schema was asked for by the caller, not by the agent definition.
+      // Letting frontmatter take the tool away would make the request
+      // unsatisfiable rather than merely restricted — unlike a nested
+      // delegation tool, which is an opt-in the same frontmatter may retract.
+      vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: true }));
+      vi.mocked(getAgentConfig).mockReturnValueOnce(
+        makeAgentConfig({ extensions: true, disallowedTools: ["StructuredOutput"] }),
+      );
+      vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
+      withExtensions({ "/ext/ok.ts": ["ok_ext"] });
+      const { session } = createSession("OK");
+      createAgentSession.mockResolvedValue({ session });
+
+      await runAgent(ctx, "Explore", "go", { pi, structuredOutput: STRUCTURED });
+
+      await expect(
+        session.agent.beforeToolCall?.({ toolCall: { name: "StructuredOutput" } }),
+      ).resolves.not.toMatchObject({ block: true });
+    });
+
+    it("injects nothing when no schema was asked for", async () => {
+      vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: true }));
+      vi.mocked(getAgentConfig).mockReturnValueOnce(makeAgentConfig({ extensions: true }));
+      vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
+      withExtensions({ "/ext/ok.ts": ["ok_ext"] });
+      const { session } = createSession("OK");
+      createAgentSession.mockResolvedValue({ session });
+
+      await runAgent(ctx, "Explore", "go", { pi });
+
+      expect(customToolNames()).not.toContain("StructuredOutput");
+      await expect(
+        session.agent.beforeToolCall?.({ toolCall: { name: "StructuredOutput" } }),
+      ).resolves.toMatchObject({ block: true });
+    });
+
+    it("returns the captured payload and does not retry when the child complies", async () => {
+      vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: true }));
+      vi.mocked(getAgentConfig).mockReturnValueOnce(makeAgentConfig({ extensions: true }));
+      vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
+      withExtensions({ "/ext/ok.ts": ["ok_ext"] });
+      const { session } = createSession("prose nobody asked for");
+      createAgentSession.mockResolvedValue({ session });
+
+      const answered = { done: false };
+      session.prompt.mockImplementation(async () => {
+        if (!answered.done) {
+          answered.done = true;
+          const tool = customTool("StructuredOutput");
+          await tool.execute("tc-1", { answer: "42" });
+        }
+      });
+
+      const result = await runAgent(ctx, "Explore", "go", { pi, structuredOutput: STRUCTURED });
+
+      expect(result.structuredJson).toBe(JSON.stringify({ answer: "42" }));
+      expect(result.failure).toBeUndefined();
+      expect(result.structuredRetried).toBeUndefined();
+      // One prompt: the child answered, so there is nothing to ask again.
+      expect(session.prompt).toHaveBeenCalledTimes(1);
+    });
+
+    it("prompts once more when the child answered in prose, and fails if it still does", async () => {
+      vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: true }));
+      vi.mocked(getAgentConfig).mockReturnValueOnce(makeAgentConfig({ extensions: true }));
+      vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
+      withExtensions({ "/ext/ok.ts": ["ok_ext"] });
+      const { session } = createSession("still just prose");
+      createAgentSession.mockResolvedValue({ session });
+
+      const result = await runAgent(ctx, "Explore", "go", { pi, structuredOutput: STRUCTURED });
+
+      expect(session.prompt).toHaveBeenCalledTimes(2);
+      expect(String(session.prompt.mock.calls[1][0])).toMatch(/Call StructuredOutput now/);
+      expect(result.structuredJson).toBeUndefined();
+      expect(result.structuredRetried).toBe(true);
+      // Reported as a failure, not as a completion holding prose the caller
+      // never asked for.
+      expect(result.failure).toMatch(/StructuredOutput/);
+    });
+
+    it("recovers when the second prompt produces the payload", async () => {
+      vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: true }));
+      vi.mocked(getAgentConfig).mockReturnValueOnce(makeAgentConfig({ extensions: true }));
+      vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
+      withExtensions({ "/ext/ok.ts": ["ok_ext"] });
+      const { session } = createSession("prose");
+      createAgentSession.mockResolvedValue({ session });
+
+      let calls = 0;
+      session.prompt.mockImplementation(async () => {
+        calls++;
+        if (calls === 2) await customTool("StructuredOutput").execute("tc-2", { answer: "late" });
+      });
+
+      const result = await runAgent(ctx, "Explore", "go", { pi, structuredOutput: STRUCTURED });
+
+      expect(result.structuredJson).toBe(JSON.stringify({ answer: "late" }));
+      expect(result.structuredRetried).toBe(true);
+      expect(result.failure).toBeUndefined();
+    });
+
+    it("carries the validation error into the retry prompt", async () => {
+      vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: true }));
+      vi.mocked(getAgentConfig).mockReturnValueOnce(makeAgentConfig({ extensions: true }));
+      vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
+      withExtensions({ "/ext/ok.ts": ["ok_ext"] });
+      const { session } = createSession("prose");
+      createAgentSession.mockResolvedValue({ session });
+
+      let calls = 0;
+      session.prompt.mockImplementation(async () => {
+        calls++;
+        // Wrong shape, so the tool rejects it and records why.
+        if (calls === 1) await customTool("StructuredOutput").execute("tc-3", { wrong: 1 });
+      });
+
+      await runAgent(ctx, "Explore", "go", { pi, structuredOutput: STRUCTURED });
+
+      const retry = String(session.prompt.mock.calls[1][0]);
+      // "you got the shape wrong" and "you never answered" need different
+      // corrections; telling it the wrong one sends it hunting.
+      expect(retry).toMatch(/did not match the required schema/);
+      expect(retry).toContain("answer");
+    });
+
+    it("does not retry a child that was aborted", async () => {
+      vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: true }));
+      vi.mocked(getAgentConfig).mockReturnValueOnce(makeAgentConfig({ extensions: true }));
+      vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
+      withExtensions({ "/ext/ok.ts": ["ok_ext"] });
+      const { session } = createSession("prose");
+      createAgentSession.mockResolvedValue({ session });
+
+      const controller = new AbortController();
+      session.prompt.mockImplementation(async () => { controller.abort(); });
+
+      await runAgent(ctx, "Explore", "go", {
+        pi,
+        structuredOutput: STRUCTURED,
+        signal: controller.signal,
+      });
+
+      // Re-prompting something the user just stopped would be the opposite of
+      // what they asked for.
+      expect(session.prompt).toHaveBeenCalledTimes(1);
     });
 
     it("a partial denial does not take down the whole nested set", async () => {
@@ -2219,6 +2462,53 @@ describe("agent-runner ext: tool selectors", () => {
     expect(tools).toContain("read");
     expect(tools).toContain("foo_other");
     expect(tools).not.toContain("foo_tool"); // denylisted even though ext:foo selects it
+  });
+});
+
+// The limit a run will enforce, resolved before the run starts. The widget's
+// turn counter has to predict it for agents spawned outside the Agent tool
+// (mentions, cross-extension RPC), and a second copy of the expression there
+// would drift from the one runAgent enforces — so both call this.
+describe("resolveEffectiveMaxTurns", () => {
+  let prevDefault: number | undefined;
+
+  beforeEach(() => {
+    prevDefault = getDefaultMaxTurns();
+    vi.mocked(getAgentConfig).mockReturnValue(makeAgentConfig({ maxTurns: 7 }) as any);
+  });
+
+  afterEach(() => {
+    setDefaultMaxTurns(prevDefault);
+    vi.mocked(getAgentConfig).mockReset();
+  });
+
+  it("prefers an explicit value over the agent's own and the project default", () => {
+    setDefaultMaxTurns(20);
+    expect(resolveEffectiveMaxTurns("test-agent", 3)).toBe(3);
+  });
+
+  it("falls back to the agent's own max_turns", () => {
+    setDefaultMaxTurns(20);
+    expect(resolveEffectiveMaxTurns("test-agent")).toBe(7);
+  });
+
+  it("falls back to the project default when the agent sets none", () => {
+    setDefaultMaxTurns(20);
+    vi.mocked(getAgentConfig).mockReturnValue(makeAgentConfig() as any);
+    expect(resolveEffectiveMaxTurns("test-agent")).toBe(20);
+  });
+
+  it("is unlimited when nothing sets a limit", () => {
+    setDefaultMaxTurns(undefined);
+    vi.mocked(getAgentConfig).mockReturnValue(makeAgentConfig() as any);
+    expect(resolveEffectiveMaxTurns("test-agent")).toBeUndefined();
+  });
+
+  it("treats an explicit 0 as unlimited rather than as 'no opinion'", () => {
+    // Not the same as omitting it: 0 is how a caller says "no limit", and
+    // falling through to the default would impose one it asked not to have.
+    setDefaultMaxTurns(20);
+    expect(resolveEffectiveMaxTurns("test-agent", 0)).toBeUndefined();
   });
 });
 

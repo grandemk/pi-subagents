@@ -30,6 +30,9 @@ function makePi() {
     registerMessageRenderer: vi.fn(),
     registerTool: vi.fn((t: any) => tools.set(t.name, t)),
     registerCommand: vi.fn(),
+    registerEntryRenderer: vi.fn(),
+    registerFlag: vi.fn(),
+    getFlag: vi.fn(),
     on: vi.fn((event: string, handler: any) => lifecycle.set(event, handler)),
     events: { emit: vi.fn(), on: vi.fn(() => vi.fn()) },
     appendEntry: vi.fn(),
@@ -209,11 +212,13 @@ describe("fallbackSubagent gates dispatch through the real Agent tool", () => {
     // is deleted or disabled — the opposite of what strict dispatch is for.
     const { tools } = boot();
     vi.mocked(runAgent).mockResolvedValue({
-      responseText: "first", session: { dispose: vi.fn() } as any, aborted: false, steered: false,
+      // `messages` is not optional on a real AgentSession, and a background
+      // resume reads it to anchor transcript streaming.
+      responseText: "first", session: { dispose: vi.fn(), messages: [] } as any, aborted: false, steered: false,
     });
     const spawned = await tools.get("Agent").execute(
       "tc-6",
-      { prompt: "start", description: "live agent", subagent_type: "scout" },
+      { prompt: "start", description: "live agent", subagent_type: "scout", run_in_background: false },
       undefined, undefined, ctx(),
     );
     const id = /Agent ID: (\S+)/.exec(textOf(spawned))?.[1]

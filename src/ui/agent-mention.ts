@@ -15,15 +15,31 @@
  *
  * pi's `CombinedAutocompleteProvider` already owns `@`, where it means "attach a
  * file". Extensions can wrap it (`ctx.ui.addAutocompleteProvider`), so this
- * provider answers the `@` tokens that name an agent and delegates every other
- * one — including all of `applyCompletion`, whose `@`-branch already inserts
+ * provider adds the `@` tokens that name an agent and delegates everything else
+ * — including all of `applyCompletion`, whose `@`-branch already inserts
  * `item.value` plus a trailing space, which is exactly what a handle needs.
  *
- * Matching mirrors Claude Code: case-insensitive prefix (not fuzzy), and when
- * any agent matches, files are dropped from the list rather than mixed in — an
- * `@name` that names an agent is never also a path. Offering never-started
- * types is a deliberate step beyond it; Claude Code's registry holds only live
- * tasks, so an agent you had not launched yet was unaddressable.
+ * Matching mirrors Claude Code: case-insensitive prefix, not fuzzy. What it does
+ * NOT mirror is Claude Code dropping files whenever an agent matches. Here `@` is
+ * pi's file picker first, and the handles are additive, so a token matching both
+ * lists both — agents first. Suppressing on any match sounds narrow and is not:
+ * an empty token prefix-matches every handle, so a bare `@` — the gesture people
+ * use to browse files — would offer no files at all, and a single letter
+ * beginning any handle would do the same.
+ *
+ * Both halves ship under ONE `prefix`, which is sound because wherever BOTH sides
+ * produce rows they measured the same span. pi's `extractAtPrefix` takes the
+ * token after the last of `{space, tab, ", ', =}` and keeps it only if it starts
+ * with `@`; `MENTION_TRIGGER` matches `@[\w-]*` at the cursor, after start-of-line
+ * or `[\s。、？！]`. Where those two disagree, exactly one side answers and there
+ * is nothing to merge: `@src/index.ts` and `@"my file` are pi's alone (no handle
+ * matches), `=@ex` is pi's alone (`=` is a delimiter to pi, not a boundary to us),
+ * and `。@ex` is ours alone (the reverse). A merged response therefore never
+ * carries a prefix from one side and an item from the other.
+ *
+ * Offering never-started types is a deliberate step beyond Claude Code, whose
+ * registry holds only live tasks, so an agent you had not launched yet was
+ * unaddressable.
  */
 
 import type { AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions } from "@earendil-works/pi-tui";
@@ -103,6 +119,10 @@ export function createMentionProvider(
   roster: () => MentionTarget[],
   isEnabled: () => boolean,
 ): AutocompleteProvider {
+  // One warning per provider, not per keystroke: `getSuggestions` runs on every
+  // character typed after `@`, so an unguarded log would bury the terminal in
+  // the time it takes to finish a word.
+  let warnedInnerFailure = false;
   return {
     // Only `@` — the contract is "characters that should naturally trigger
     // THIS provider", and pi unions each wrapper's own set onto the outermost
@@ -111,9 +131,41 @@ export function createMentionProvider(
     triggerCharacters: ["@"],
 
     async getSuggestions(lines, cursorLine, cursorCol, options): Promise<AutocompleteSuggestions | null> {
-      const items = isEnabled() ? mentionItems(roster(), lines[cursorLine] ?? "", cursorCol) : null;
-      if (items) return items;
-      return current.getSuggestions(lines, cursorLine, cursorCol, options);
+      const mine = isEnabled() ? mentionItems(roster(), lines[cursorLine] ?? "", cursorCol) : null;
+      // Asked unconditionally: pi owns `@` and must keep answering for it even
+      // when a handle matches too. That is the same work vanilla pi does on any
+      // `@` keystroke — a capped `fd` search, or nothing at all when the host
+      // configured no `fd` path — but we now do it on tokens we used to answer
+      // alone, so it must not be able to take the popup down with it. The
+      // wrapped provider is not always pi's: another extension may sit inside
+      // us, and before this it was never called for a token naming an agent.
+      // try/catch, not `.catch()`: a provider that throws SYNCHRONOUSLY never
+      // returns the promise a `.catch()` would attach to, and the throw escapes
+      // this method as a rejection — which pi does not handle either
+      // (components/editor.js:1892 awaits with no catch of its own).
+      let theirs: AutocompleteSuggestions | null = null;
+      try {
+        theirs = await current.getSuggestions(lines, cursorLine, cursorCol, options);
+      } catch (err) {
+        // Safe to treat as "no files": pi discards any response whose request is
+        // no longer current, so an aborted search that surfaces as a rejection
+        // cannot leave a stale popup behind (`isAutocompleteRequestCurrent`).
+        // Warned rather than swallowed outright — the failure is invisible in
+        // the popup, and the same `console.warn` channel already carries this
+        // extension's other non-fatal failures.
+        if (!warnedInnerFailure) {
+          warnedInnerFailure = true;
+          console.warn("[pi-subagents] the autocomplete provider below us failed; showing agent rows only:", err);
+        }
+        theirs = null;
+      }
+      if (!mine) return theirs;
+      if (!theirs) return mine;
+      // Agents first: there are a handful of them against pi's 20 file rows, and
+      // a handle buried under fuzzy path matches is a handle nobody finds. The
+      // prefix is ours by the span argument in the header — identical to pi's
+      // whenever both sides have something to say.
+      return { items: [...mine.items, ...theirs.items], prefix: mine.prefix };
     },
 
     applyCompletion(lines, cursorLine, cursorCol, item, prefix) {

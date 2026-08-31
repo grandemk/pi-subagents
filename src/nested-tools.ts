@@ -77,6 +77,8 @@ export interface NestedAgentManager {
     prompt: string,
     options: NestedSpawnOptions,
   ): string;
+  /** Resolves once the spawned agent is running; rejects on a startup failure. */
+  awaitStartup(id: string): Promise<void>;
   spawnAndWait(
     pi: ExtensionAPI,
     ctx: ExtensionContext,
@@ -168,7 +170,11 @@ export function createNestedSubagentTools(context: NestedToolContext): ToolDefin
       model: Type.Optional(Type.String({ description: "Optional provider/model override." })),
       thinking: Type.Optional(Type.String({ description: "Optional thinking level." })),
       max_turns: Type.Optional(Type.Number({ minimum: 1 })),
-      run_in_background: Type.Optional(Type.Boolean()),
+      run_in_background: Type.Optional(
+        Type.Boolean({
+          description: "Defaults to false for nested spawns — the call blocks and returns the child's result inline. Set true only for work you will collect later with get_subagent_result; a detached child is stopped when you finish.",
+        }),
+      ),
       resume: Type.Optional(Type.String({ description: "Resume a nested agent owned by this parent." })),
       isolated: Type.Optional(Type.Boolean()),
       inherit_context: Type.Optional(Type.Boolean()),
@@ -216,8 +222,11 @@ export function createNestedSubagentTools(context: NestedToolContext): ToolDefin
       }
 
       const config = getAgentConfigIn(registry, resolvedType);
+      // Foreground regardless of `backgroundByDefault` — see the reasoning on
+      // ResolveOptions. An explicit `true` here still opts in.
       const invocation = resolveAgentInvocationConfig(config, params, {
         worktreeAllowed: isWorktreeIsolationEnabled(),
+        defaultRunInBackground: false,
       });
       let model = ctx.model;
       if (invocation.modelInput) {
@@ -332,6 +341,9 @@ export function createNestedSubagentTools(context: NestedToolContext): ToolDefin
           // Synchronous, before the event loop yields — onSessionCreated fires
           // asynchronously inside runAgent, so the file is attached in time.
           attachTranscript(id);
+          // Worktree isolation starts the agent asynchronously; surface its
+          // failure as a tool error, like the synchronous throw used to.
+          await context.manager.awaitStartup(id);
           return textResult(`Nested agent started in background. Agent ID: ${id}`);
         }
 

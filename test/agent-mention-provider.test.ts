@@ -2,11 +2,13 @@
  * agent-mention-provider.test.ts — the `@handle` suggestions stacked on pi's
  * built-in autocomplete.
  *
- * The provider sits in front of file completion, so the risk is in the two
- * directions it can get the handoff wrong: claiming an `@` token that was meant
- * to attach a file (which would make `@src/…` uncompletable), or delegating one
- * that names a live agent (which buries the agent under fuzzy path matches).
- * Every case below pins one side of that boundary.
+ * The provider sits in front of file completion and must not take it away: `@`
+ * still means "attach a file" in pi, and agents are additive, so a token that
+ * matches both lists them both — agents first, then pi's rows, under one
+ * `prefix`. The risks are at the seam: dropping pi's list when an agent matches
+ * (which is what made a bare `@` stop offering files), inserting the wrong span
+ * because the two providers disagreed about the token, and claiming a token that
+ * was only ever a path. Every case below pins one of those.
  */
 import { CombinedAutocompleteProvider } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
@@ -72,21 +74,40 @@ function tombstone(over: Partial<AgentTombstone> = {}): AgentTombstone {
 const suggest = (provider: ReturnType<typeof createMentionProvider>, line: string) =>
   provider.getSuggestions([line], 0, line.length, { signal: new AbortController().signal });
 
+/**
+ * Just the rows we contributed. pi's stub rows are dropped by identity, so a
+ * test about handle ordering stays about handle ordering — without pretending
+ * no file matched, which is the state that hid this bug in the first place.
+ */
+const agentRows = (result: Awaited<ReturnType<typeof suggest>>) =>
+  (result?.items ?? []).filter(item => !(FILE_SUGGESTIONS.items as unknown[]).includes(item));
+
 describe("agent suggestions", () => {
-  it("offers matching handles and keeps files out of the list", async () => {
+  it("lists matching handles above pi's files rather than instead of them", async () => {
     const current = builtIn();
     const provider = createMentionProvider(current, () => mentionRoster(managerWith(record({ handle: "explore" })), []), () => true);
 
     const result = await suggest(provider, "@ex");
 
     expect(result).toEqual({
-      items: [{ value: "@explore", label: "@explore", description: "send message · running · find flaky tests" }],
+      items: [
+        { value: "@explore", label: "@explore", description: "send message · running · find flaky tests" },
+        ...FILE_SUGGESTIONS.items,
+      ],
+      // Ours, not the stub's: when both match, both describe the same span (see
+      // the real-provider describe below), and ours is the authority on where
+      // the handle token starts.
       prefix: "@ex",
     });
-    expect(current.getSuggestions).not.toHaveBeenCalled();
+    // Verbatim: the inner provider has to see the same line, cursor and options
+    // the editor handed us, or its rows describe a different token than ours.
+    expect(current.getSuggestions).toHaveBeenCalledWith(["@ex"], 0, 3, expect.objectContaining({ signal: expect.anything() }));
   });
 
-  it("offers every agent on a bare @", async () => {
+  it("offers every agent on a bare @, and still offers files", async () => {
+    // The regression this file exists for: an empty token prefix-matches EVERY
+    // handle, so suppressing files "when an agent matches" suppressed them on
+    // the one gesture people use to browse — `@` alone.
     const provider = createMentionProvider(
       builtIn(),
       () => mentionRoster(managerWith(record({ handle: "explore" }), record({ handle: "plan", startedAt: 2000 })), []),
@@ -95,7 +116,70 @@ describe("agent suggestions", () => {
 
     const result = await suggest(provider, "@");
 
-    expect(result?.items.map(i => i.value)).toEqual(["@explore", "@plan"]);
+    expect(result?.items.map(i => i.value)).toEqual(["@explore", "@plan", "@src/index.ts"]);
+  });
+
+  it("offers agents alone when no file matched", async () => {
+    const current = builtIn();
+    current.getSuggestions.mockResolvedValue(null);
+    const provider = createMentionProvider(current, () => mentionRoster(managerWith(record({ handle: "explore" })), []), () => true);
+
+    expect(await suggest(provider, "@ex")).toEqual({
+      items: [{ value: "@explore", label: "@explore", description: "send message · running · find flaky tests" }],
+      prefix: "@ex",
+    });
+  });
+
+  it("still offers agents when the wrapped provider throws", async () => {
+    // We now call the inner provider for tokens we used to answer alone, and it
+    // is not always pi's — an extension registered before us sits inside. A
+    // rejection there must not delete the handle rows too.
+    const current = builtIn();
+    current.getSuggestions.mockRejectedValue(new Error("inner provider exploded"));
+    const provider = createMentionProvider(current, () => mentionRoster(managerWith(record({ handle: "explore" })), []), () => true);
+
+    expect(await suggest(provider, "@ex")).toEqual({
+      items: [{ value: "@explore", label: "@explore", description: "send message · running · find flaky tests" }],
+      prefix: "@ex",
+    });
+  });
+
+  it("still offers agents when the wrapped provider throws synchronously", async () => {
+    // The async case above is caught by any `.catch()`; this one is not — a sync
+    // throw never yields a promise to attach to, so only try/catch holds it.
+    const current = builtIn();
+    current.getSuggestions.mockImplementation(() => { throw new Error("sync boom"); });
+    const provider = createMentionProvider(current, () => mentionRoster(managerWith(record({ handle: "explore" })), []), () => true);
+
+    expect(await suggest(provider, "@ex")).toEqual({
+      items: [{ value: "@explore", label: "@explore", description: "send message · running · find flaky tests" }],
+      prefix: "@ex",
+    });
+  });
+
+  it("warns once about a failing inner provider, not once per keystroke", async () => {
+    // getSuggestions runs on every character after `@`; a log per call would
+    // bury the terminal. But swallowing it silently leaves a broken provider
+    // with no trace anywhere, since the popup just looks file-less.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const current = builtIn();
+      current.getSuggestions.mockRejectedValue(new Error("inner provider exploded"));
+      const provider = createMentionProvider(current, () => mentionRoster(managerWith(record({ handle: "explore" })), []), () => true);
+
+      for (const line of ["@e", "@ex", "@exp"]) await suggest(provider, line);
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][0]).toContain("[pi-subagents]");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("returns pi's list untouched when no agent exists at all", async () => {
+    const provider = createMentionProvider(builtIn(), () => [], () => true);
+
+    expect(await suggest(provider, "@ex")).toBe(FILE_SUGGESTIONS);
   });
 
   it("puts steerable agents first, then earliest-launched", async () => {
@@ -111,13 +195,13 @@ describe("agent suggestions", () => {
 
     const result = await suggest(provider, "@ex");
 
-    expect(result?.items.map(i => i.value)).toEqual(["@explore-2", "@explore-3", "@explore"]);
+    expect(agentRows(result).map(i => i.value)).toEqual(["@explore-2", "@explore-3", "@explore"]);
   });
 
   it("matches case-insensitively", async () => {
     const provider = createMentionProvider(builtIn(), () => mentionRoster(managerWith(record({ handle: "explore" })), []), () => true);
 
-    expect((await suggest(provider, "@EX"))?.items.map(i => i.value)).toEqual(["@explore"]);
+    expect(agentRows(await suggest(provider, "@EX")).map(i => i.value)).toEqual(["@explore"]);
   });
 
   it("completes a mention typed mid-message", async () => {
@@ -138,14 +222,16 @@ describe("agents that have never run", () => {
   it("offers a registered type with no live instance, and says it will start one", async () => {
     const provider = createMentionProvider(builtIn(), () => mentionRoster(managerWith(), TYPES), () => true);
 
-    expect(await suggest(provider, "@ex")).toEqual({
-      items: [{
-        value: "@explore",
-        label: "@explore",
-        description: "start agent · Fast codebase exploration.",
-      }],
-      prefix: "@ex",
-    });
+    const result = await suggest(provider, "@ex");
+
+    expect(agentRows(result)).toEqual([{
+      value: "@explore",
+      label: "@explore",
+      description: "start agent · Fast codebase exploration.",
+    }]);
+    // Kept from before the merge: the span the rows are inserted over is the
+    // typed token, not the stub's "@src/".
+    expect(result?.prefix).toBe("@ex");
   });
 
   it("lets a live agent own its handle instead of listing the type twice", async () => {
@@ -159,8 +245,8 @@ describe("agents that have never run", () => {
 
     const result = await suggest(provider, "@ex");
 
-    expect(result?.items.map(i => i.value)).toEqual(["@explore"]);
-    expect(result?.items[0].description).toBe("send message · running · find flaky tests");
+    expect(agentRows(result).map(i => i.value)).toEqual(["@explore"]);
+    expect(agentRows(result)[0].description).toBe("send message · running · find flaky tests");
   });
 
   it("still offers the type once its only instance has finished, as a resume", async () => {
@@ -181,7 +267,7 @@ describe("agents that have never run", () => {
       () => true,
     );
 
-    expect((await suggest(provider, "@"))?.items.map(i => i.value))
+    expect(agentRows(await suggest(provider, "@")).map(i => i.value))
       .toEqual(["@plan", "@explore", "@code-review"]);
   });
 });
@@ -254,7 +340,7 @@ describe("composing with another extension's provider", () => {
     );
 
     // ours wins for @, the inner wrapper still owns #, files still reach base
-    expect((await suggest(provider, "@ex"))?.items.map(i => i.value)).toEqual(["@explore"]);
+    expect(agentRows(await suggest(provider, "@ex")).map(i => i.value)).toEqual(["@explore"]);
     expect((await suggest(provider, "#gen"))?.items.map(i => i.value)).toEqual(["#general"]);
     expect(await suggest(provider, "@src/")).toBe(FILE_SUGGESTIONS);
   });
@@ -264,8 +350,8 @@ describe("composing with another extension's provider", () => {
     const ours = createMentionProvider(base, () => mentionRoster(managerWith(), TYPES), () => true);
     const outer = hashWrapper(ours) as any;
 
-    expect((await outer.getSuggestions(["@ex"], 0, 3, { signal: new AbortController().signal }))
-      ?.items.map((i: any) => i.value)).toEqual(["@explore"]);
+    expect(agentRows(await outer.getSuggestions(["@ex"], 0, 3, { signal: new AbortController().signal }))
+      .map(i => i.value)).toEqual(["@explore"]);
     expect((await outer.getSuggestions(["#g"], 0, 2, { signal: new AbortController().signal }))
       ?.items.map((i: any) => i.value)).toEqual(["#general"]);
   });
@@ -339,6 +425,28 @@ describe("against pi's real provider", () => {
       .toEqual(["@explore  please"]);
   });
 
+  it("inserts a FILE-shaped row from OUR prefix, character for character", async () => {
+    // The merge ships both kinds of row under one `prefix`, so pi's real
+    // applyCompletion has to land a path from a span our regex measured. Off by
+    // one and it eats a character or leaves an `@` behind — silently.
+    //
+    // The file row is synthesized rather than discovered: pi's
+    // getFuzzyFileSuggestions returns [] the moment `fdPath` is null
+    // (pi-tui/dist/autocomplete.js:577), which is how every real-provider test
+    // here constructs it, and `fd` cannot be assumed on CI. What that leaves
+    // unverified is only pi's own token scan — `extractAtPrefix` takes the whole
+    // token after the last delimiter, and we only ever claim tokens of `[\w-]`,
+    // so the two spans cannot disagree where both produce rows.
+    const p = provider();
+    const suggestions = (await suggest(p, "@ex"))!;
+    const fileRow = { value: "@examples/agent-tool-description.md", label: "agent-tool-description.md" };
+
+    expect(p.applyCompletion(["@ex"], 0, 3, fileRow, suggestions.prefix).lines)
+      .toEqual(["@examples/agent-tool-description.md "]);
+    expect(p.applyCompletion(["ask @ex now"], 0, 7, fileRow, suggestions.prefix).lines)
+      .toEqual(["ask @examples/agent-tool-description.md  now"]);
+  });
+
   it("declares a trigger character the editor will actually accept", () => {
     // editor.js:1851 drops multi-char entries, "/" and whitespace silently.
     for (const character of provider().triggerCharacters ?? []) {
@@ -390,9 +498,7 @@ describe("named agents and evicted ones", () => {
       () => true,
     );
 
-    const items = (await suggest(provider, "@"))!.items;
-
-    expect(items).toEqual([
+    expect(agentRows(await suggest(provider, "@"))).toEqual([
       { value: "@auth-audit", label: "@auth-audit", description: "send message · Explore · running · audit the auth flow" },
     ]);
   });
@@ -426,7 +532,7 @@ describe("named agents and evicted ones", () => {
       () => true,
     );
 
-    expect((await suggest(provider, "@"))!.items).toEqual([
+    expect(agentRows(await suggest(provider, "@"))).toEqual([
       { value: "@explore", label: "@explore", description: "resume · Explore · audit the RPC path" },
     ]);
   });
@@ -440,7 +546,7 @@ describe("named agents and evicted ones", () => {
     } as unknown as AgentManager;
     const provider = createMentionProvider(builtIn(), () => mentionRoster(manager, []), () => true);
 
-    expect((await suggest(provider, "@"))!.items.map(i => i.value)).toEqual(["@plan", "@explore"]);
+    expect(agentRows(await suggest(provider, "@")).map(i => i.value)).toEqual(["@plan", "@explore"]);
   });
 
   it("keeps an aliased tombstone's type handle reserved too", () => {

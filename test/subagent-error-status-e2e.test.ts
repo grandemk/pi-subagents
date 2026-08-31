@@ -43,7 +43,7 @@ describe("issue #144 — empty-error final turns must not be 'completed'", () =>
     run = await runPrintMode({
       prompt: "Delegate.",
       respond: routeBySession({
-        parentInitial: agentCall({ description: "doomed", prompt: "Do work." }),
+        parentInitial: agentCall({ run_in_background: false, description: "doomed", prompt: "Do work." }),
         parentFinal: "parent done",
         // The child's one and only turn: provider error, zero content.
         subagent: () => fauxAssistantMessage([], { stopReason: "error", errorMessage: FATAL }),
@@ -62,7 +62,7 @@ describe("issue #144 — empty-error final turns must not be 'completed'", () =>
     run = await runPrintMode({
       prompt: "Delegate.",
       respond: routeBySession({
-        parentInitial: agentCall({ description: "masked", prompt: "Do work." }),
+        parentInitial: agentCall({ run_in_background: false, description: "masked", prompt: "Do work." }),
         parentFinal: "parent done",
         subagent: (ctx) => {
           const hasToolResult = ctx.messages.some((m) => m.role === "toolResult");
@@ -94,7 +94,7 @@ describe("issue #144 — empty-error final turns must not be 'completed'", () =>
     run = await runPrintMode({
       prompt: "Delegate.",
       respond: routeBySession({
-        parentInitial: agentCall({ description: "empty", prompt: "Do work." }),
+        parentInitial: agentCall({ run_in_background: false, description: "empty", prompt: "Do work." }),
         parentFinal: "parent done",
         subagent: () => fauxAssistantMessage([], { stopReason: "error", errorMessage: FATAL }),
       }),
