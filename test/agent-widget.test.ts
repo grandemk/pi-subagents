@@ -155,7 +155,7 @@ describe("AgentWidget", () => {
   });
 
   // The model is opt-in: the row is already dense, and the same pair is on the
-  // tool result and in the conversation viewer either way.
+  // tool result and in the agent view either way.
   it("names the model and thinking on a running row under showModel", () => {
     const manager = { listAgents: () => [makeRecord("bg", { isBackground: true })] };
 

@@ -6,7 +6,7 @@
  * (`test/perf/ab.mjs`), which copies this file into a worktree of an older
  * commit and runs the same benchmarks there. That last consumer is why the
  * builders here stay structural — plain object literals satisfying the shapes
- * `AgentWidget`, `FleetList` and `ConversationViewer` accept — rather than
+ * `AgentWidget`, `FleetList` and `AgentView` accept — rather than
  * importing anything from `src/`. A fixture that reached into production types
  * would stop compiling the moment it travelled to a tree where those types
  * differ, which is exactly the tree the comparison exists to measure.
@@ -252,7 +252,7 @@ export function mountFleet(FleetList: any, records: unknown[]) {
   };
 }
 
-/** Construct a `ConversationViewer` over a synthetic session. */
+/** Construct a `AgentView` over a synthetic session. */
 export function mountViewer(
   Viewer: any,
   session: any,

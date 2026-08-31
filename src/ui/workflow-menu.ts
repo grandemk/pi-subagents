@@ -19,6 +19,9 @@ import type { AgentRecord } from "../types.js";
 import { pauseWorkflowTask, resumeWorkflowTask, type WorkflowTask } from "../workflow/task.js";
 import { WorkflowDialog } from "./workflow-dialog.js";
 
+/** Keep the bounded run inspector from taking over the whole terminal. */
+const WORKFLOW_DIALOG_HEIGHT_PCT = 70;
+
 /** Everything the menu and the inspector need from the extension around them. */
 export interface WorkflowMenuDeps {
   /**
@@ -29,8 +32,8 @@ export interface WorkflowMenuDeps {
   tasks: ReadonlyMap<string, WorkflowTask>;
   /** The record behind an agent id, or undefined once it has been swept. */
   getRecord(id: string): AgentRecord | undefined;
-  /** The conversation overlay `c` opens on an agent row. */
-  viewAgentConversation(ctx: ExtensionCommandContext, record: AgentRecord): Promise<void>;
+  /** The full-screen agent view `c` opens on an agent row. */
+  viewAgent(ctx: ExtensionCommandContext, record: AgentRecord): Promise<void>;
   /**
    * The session context, for the fleet-list entry point — that one is a
    * keypress in a list that holds no `ctx` of its own. Undefined between
@@ -45,7 +48,7 @@ export interface WorkflowMenuDeps {
  * All six controls are wired: `onKill` aborts the run's controller, while
  * pause/resume and per-agent skip/retry go through `task.control`, the handle
  * `runWorkflow` hands back. `onOpenAgent` is the odd one out — it opens the
- * child's conversation rather than changing the run. The dialog derives its key
+ * child's agent session rather than changing the run. The dialog derives its key
  * hints from the actions it is handed, so the footer advertises exactly what
  * works — see `WorkflowDialogActions`.
  */
@@ -54,17 +57,14 @@ export async function showWorkflowDialog(
   task: WorkflowTask,
   deps: WorkflowMenuDeps,
 ): Promise<void> {
-  // Overlaid on the same terms as the conversation viewer, because they are
-  // reached the same way: both are rows of the fleet list, and opening one
-  // must not behave unlike opening the other. Inline, the frame would render
-  // into the conversation and stay in the scrollback after it closed.
-  const { VIEWPORT_HEIGHT_PCT } = await import("./conversation-viewer.js");
+  // The inspector is a bounded overlay; the agent view opened from it is the
+  // full-screen replacement and temporarily hides this frame underneath.
   /**
-   * This dialog's own overlay, so `c` can hide it while the conversation is
-   * up. Overlays stack, so the viewer would render *over* it either way —
+   * This dialog's own overlay, so `c` can hide it while the agent view is
+   * up. Overlays stack, so the agent view would render *over* it either way —
    * but the two frames size themselves to different content, and the taller
    * one's edges show around the shorter. Hidden, there is nothing to peek
-   * out, and un-hiding puts the focus back on the dialog when the viewer
+   * out, and un-hiding puts the focus back on the dialog when the agent view
    * closes.
    */
   let overlay: { setHidden(hidden: boolean): void } | undefined;
@@ -120,19 +120,19 @@ export async function showWorkflowDialog(
             const record = deps.getRecord(recordId);
             // A run's children are records like any other, so they are swept
             // ten minutes after they finish — the row outlives the
-            // conversation it points at, and saying why beats an overlay that
+            // agent session it points at, and saying why beats an overlay that
             // opens empty.
             if (record === undefined) {
-              ctx.ui.notify("No conversation left — agent records are dropped ten minutes after they finish.", "info");
+              ctx.ui.notify("No agent session left — agent records are dropped ten minutes after they finish.", "info");
               return;
             }
             overlay?.setHidden(true);
-            // Caught before the `finally`, so a viewer that fails to open
+            // Caught before the `finally`, so an agent view that fails to open
             // still un-hides the dialog and cannot surface as an unhandled
             // rejection out of a detached promise.
-            void deps.viewAgentConversation(ctx, record)
+            void deps.viewAgent(ctx, record)
               .catch(err => ctx.ui.notify(
-                `Could not open the conversation: ${err instanceof Error ? err.message : String(err)}`,
+                `Could not open the agent view: ${err instanceof Error ? err.message : String(err)}`,
                 "warning",
               ))
               .finally(() => overlay?.setHidden(false));
@@ -141,7 +141,7 @@ export async function showWorkflowDialog(
       ),
     {
       overlay: true,
-      overlayOptions: { anchor: "center", width: "90%", maxHeight: `${VIEWPORT_HEIGHT_PCT}%` },
+      overlayOptions: { anchor: "center", width: "90%", maxHeight: `${WORKFLOW_DIALOG_HEIGHT_PCT}%` },
       onHandle: handle => { overlay = handle; },
     },
   );

@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerAgents } from "../src/agent-types.js";
 import subagentsExtension from "../src/index.js";
 import type { AgentConfig, AgentRecord } from "../src/types.js";
+import { AgentView } from "../src/ui/agent-view.js";
 import { type AgentActivity, AgentWidget } from "../src/ui/agent-widget.js";
-import { ConversationViewer } from "../src/ui/conversation-viewer.js";
 import { FleetList, type FleetUICtx } from "../src/ui/fleet-list.js";
 
 const TYPE = "colored-reviewer";
@@ -223,10 +223,10 @@ describe("custom agent color runtime surfaces", () => {
     }
   });
 
-  it("renders the conversation viewer header with the display name and color", () => {
+  it("renders the agent view header with the display name and color", () => {
     const record = makeRecord();
-    const viewer = new ConversationViewer(
-      { terminal: { rows: 30, columns: 120 }, requestRender: vi.fn() } as unknown as ConstructorParameters<typeof ConversationViewer>[0],
+    const viewer = new AgentView(
+      { terminal: { rows: 30, columns: 120 }, requestRender: vi.fn() } as unknown as ConstructorParameters<typeof AgentView>[0],
       record.session!,
       record,
       undefined,

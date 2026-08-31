@@ -67,7 +67,7 @@ export interface WorkflowAgentEntry {
    *
    * Distinct from {@link agentId}, which is the run's own `wf-agent-N` handle
    * and means nothing outside the runtime. This is what the inspector's `c`
-   * key opens a conversation viewer on, so it is reported the moment the
+   * key opens an agent view on, so it is reported the moment the
    * manager issues it rather than with the effective model — a child that dies
    * before its session resolves still has a conversation worth reading.
    */

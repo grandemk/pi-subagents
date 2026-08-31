@@ -44,7 +44,7 @@ vi.mock("@earendil-works/pi-tui", async (importOriginal) => {
 
 // After the mock, so the subjects bind the counting versions.
 const { AgentWidget } = await import("../../src/ui/agent-widget.js");
-const { ConversationViewer } = await import("../../src/ui/conversation-viewer.js");
+const { AgentView } = await import("../../src/ui/agent-view.js");
 const { makeActivity, makeFleet, makeSession, mountViewer, perfTheme, perfTui } = await import(
   "../helpers/perf-fixtures.js"
 );
@@ -55,10 +55,10 @@ beforeEach(() => {
   counts.markdownRender = 0;
 });
 
-describe("ConversationViewer — cost stays linear in transcript length", () => {
+describe("AgentView — cost stays linear in transcript length", () => {
   /** Leaf calls one render makes over a transcript of `n` messages. */
   function wrapsFor(n: number, mode: string): number {
-    const viewer = mountViewer(ConversationViewer, makeSession(n), undefined, () => mode);
+    const viewer = mountViewer(AgentView, makeSession(n), undefined, () => mode);
     viewer.render(120); // prime, so caches are warm and only steady state counts
     counts.wrap = 0;
     counts.markdownRender = 0;
@@ -91,7 +91,7 @@ describe("ConversationViewer — cost stays linear in transcript length", () => 
   // re-parses the whole transcript as Markdown — a cost this suite measured at
   // roughly 10x the warm path. Nothing else in the suite would notice.
   it("re-renders without re-parsing: the markdown cache survives a frame", () => {
-    const viewer = mountViewer(ConversationViewer, makeSession(60), undefined, () => "assistant");
+    const viewer = mountViewer(AgentView, makeSession(60), undefined, () => "assistant");
     viewer.render(120);
     const afterFirst = counts.markdownNew;
     expect(afterFirst).toBeGreaterThan(0);

@@ -239,7 +239,7 @@ describe("/agents → Workflows", () => {
       expect(dialog.render(100).at(-1)).toContain("p pause");
     });
 
-    it("opens as a centered overlay, like the conversation viewer beside it", async () => {
+    it("opens as a centered overlay, like the full-screen agent view beside it", async () => {
       // Not an overlay means inline: the frame renders into the conversation
       // and stays in the scrollback afterwards, and opening a run from the
       // fleet list behaves unlike opening the agent row directly above it.

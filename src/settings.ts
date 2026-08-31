@@ -266,7 +266,7 @@ export interface SubagentsSettings {
   reportUsage?: boolean;
   /**
    * Whether the subagent surfaces show an estimated dollar cost next to their
-   * token counts (widget, FleetView, conversation viewer, foreground results,
+   * token counts (widget, FleetView, agent view, foreground results,
    * completion notifications). Defaults to `false`. Applied live.
    *
    * Rendered as `~$0.0042` — the tilde marks it as pi's reported estimate
@@ -282,7 +282,7 @@ export interface SubagentsSettings {
    * Whether the widget's running rows name the model driving each agent and the
    * thinking level it is running at.
    *
-   * Off by default, unlike the tool result and the conversation viewer, which
+   * Off by default, unlike the tool result and the agent view, which
    * show the pair unconditionally: those have a line to themselves, while the
    * widget row already carries the description, turns, tool uses, tokens and
    * elapsed time, and every character it gains is one the description loses on a
@@ -290,9 +290,9 @@ export interface SubagentsSettings {
    */
   showModel?: boolean;
   /**
-   * How much of the conversation viewer's transcript renders as Markdown.
+   * How much of the agent view's transcript renders as Markdown.
    * Defaults to `assistant`. Applied live — the viewer's `m` key cycles this
-   * same setting, so a choice made in the overlay persists like one made in
+   * same setting, so a choice made in the agent view persists like one made in
    * `/agents → Settings`.
    *
    * Scoped rather than all-or-nothing because the two kinds of content have

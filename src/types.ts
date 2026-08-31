@@ -102,7 +102,7 @@ export type JoinMode = 'async' | 'group' | 'smart';
 export type WidgetMode = 'all' | 'background' | 'off';
 
 /**
- * How much of the conversation viewer's transcript is rendered as Markdown.
+ * How much of the agent view's transcript is rendered as Markdown.
  * - `off`: every line wraps as literal text, as it did before the mode existed.
  * - `assistant`: assistant text renders as Markdown; tool results stay verbatim
  *   and dim. The default, because assistant text *is* Markdown by contract

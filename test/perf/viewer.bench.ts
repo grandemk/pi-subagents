@@ -1,11 +1,11 @@
 /**
- * viewer.bench.ts — `ConversationViewer.render()` against transcripts of
+ * viewer.bench.ts — `AgentView.render()` against transcripts of
  * growing size.
  *
  * The highest-value benchmark in the repo: this is the only frame-rate path
  * whose cost is unbounded in the data it renders. `buildContentLines()` rebuilds
  * the *entire* transcript on every render — "rebuild every render (live data, no
- * cache needed)", conversation-viewer.ts — and the viewer subscribes to the
+ * cache needed)", agent-view.ts — and the viewer subscribes to the
  * session, so a running agent redraws it on every token (coalesced by pi at
  * ~62 Hz). Everything above the viewport is built and thrown away, and
  * `handleInput` builds it a second time on every scroll key just to count lines.
@@ -21,14 +21,14 @@
  * "cold" here while every other test stays green.
  */
 import { bench, describe } from "vitest";
-import { ConversationViewer } from "../../src/ui/conversation-viewer.js";
+import { AgentView } from "../../src/ui/agent-view.js";
 import { makeSession, mountViewer } from "../helpers/perf-fixtures.js";
 
 const SIZES = [50, 500, 5000];
 
-describe("ConversationViewer.render — markdown: assistant (default)", () => {
+describe("AgentView.render — markdown: assistant (default)", () => {
   for (const n of SIZES) {
-    const viewer = mountViewer(ConversationViewer, makeSession(n));
+    const viewer = mountViewer(AgentView, makeSession(n));
     viewer.render(120); // prime: first frame parses, the measured ones reuse
     bench(`${n} messages`, () => {
       viewer.render(120);
@@ -36,9 +36,9 @@ describe("ConversationViewer.render — markdown: assistant (default)", () => {
   }
 });
 
-describe("ConversationViewer.render — markdown: off (raw wrap)", () => {
+describe("AgentView.render — markdown: off (raw wrap)", () => {
   for (const n of SIZES) {
-    const viewer = mountViewer(ConversationViewer, makeSession(n), undefined, () => "off");
+    const viewer = mountViewer(AgentView, makeSession(n), undefined, () => "off");
     viewer.render(120);
     bench(`${n} messages`, () => {
       viewer.render(120);
@@ -46,7 +46,7 @@ describe("ConversationViewer.render — markdown: off (raw wrap)", () => {
   }
 });
 
-describe("ConversationViewer.render — cold cache (first frame)", () => {
+describe("AgentView.render — cold cache (first frame)", () => {
   // What a viewer costs the moment it is opened on an agent that already has
   // history: every sample renders a viewer that has never rendered, so the
   // Markdown cache starts empty and every message is parsed from scratch.
@@ -68,7 +68,7 @@ describe("ConversationViewer.render — cold cache (first frame)", () => {
   for (const n of [50, 500]) {
     const iterations = SAMPLES[n];
     const pool = Array.from({ length: iterations + WARMUP }, () =>
-      mountViewer(ConversationViewer, makeSession(n)),
+      mountViewer(AgentView, makeSession(n)),
     );
     let next = 0;
     bench(

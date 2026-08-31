@@ -1,7 +1,7 @@
 import { KeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentRecord } from "../src/types.js";
-import { ConversationViewer } from "../src/ui/conversation-viewer.js";
+import { AgentView } from "../src/ui/agent-view.js";
 import type { ViewerKeybindings } from "../src/ui/viewer-keys.js";
 import { createViewerKeys } from "../src/ui/viewer-keys.js";
 
@@ -46,12 +46,12 @@ function createViewer(keybindings?: ViewerKeybindings) {
     fg: (_color: string, text: string) => text,
     bold: (text: string) => text,
   } as any;
-  const viewer = new ConversationViewer(tui, session, record, undefined, theme, vi.fn(), undefined, keybindings);
+  const viewer = new AgentView(tui, session, record, undefined, theme, vi.fn(), undefined, keybindings);
   viewer.render(80); // sets lastInnerW and scrolls to bottom (autoScroll)
   return viewer;
 }
 
-function scrollOffset(viewer: ConversationViewer): number {
+function scrollOffset(viewer: AgentView): number {
   return (viewer as any).scrollOffset;
 }
 
@@ -103,7 +103,7 @@ describe("viewer-keys", () => {
   });
 });
 
-describe("ConversationViewer custom keybindings", () => {
+describe("AgentView custom keybindings", () => {
   it("routes up/down to agent navigation and Esc to the parent", () => {
     const onNavigate = vi.fn();
     const done = vi.fn();
@@ -121,7 +121,7 @@ describe("ConversationViewer custom keybindings", () => {
       startedAt: Date.now(),
     } as AgentRecord;
     const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as any;
-    const viewer = new ConversationViewer(
+    const viewer = new AgentView(
       tui, session, record, undefined, theme, done, undefined, undefined, undefined, false, undefined, undefined, onNavigate,
     );
 

@@ -1,5 +1,5 @@
 /**
- * viewer-keys.ts — Scroll key matchers for the conversation viewer.
+ * viewer-keys.ts — Scroll key matchers for the agent view.
  *
  * Resolves `tui.select.*` through the user's keybindings when pi provides a
  * manager, falling back to the previous hardcoded keys otherwise. The viewer's

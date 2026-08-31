@@ -38,6 +38,7 @@ import { applyAndEmitLoaded, loadSettings, type SubagentsSettings, saveAndEmitCh
 import { getForegroundOutcomeNote, getStatusNote, partialOutputSuffix } from "./status-note.js";
 import { type AgentConfig, type AgentInvocation, type AgentMentionMode, type AgentRecord, type JoinMode, type NotificationDetails, type SubagentType, type ViewerMarkdownMode, type WidgetMode } from "./types.js";
 import { createMentionProvider, mentionRoster, type TypeInfo } from "./ui/agent-mention.js";
+import { AgentView } from "./ui/agent-view.js";
 import {
   type AgentActivity,
   type AgentDetails,
@@ -425,15 +426,15 @@ export default function (pi: ExtensionAPI) {
   function isShowModelEnabled(): boolean { return showModel; }
   function setShowModel(b: boolean): void { showModel = b; widget.update(); }
   /**
-   * How much of the conversation viewer renders as Markdown. Read through a
-   * getter by the viewer rather than captured like `showCost`, because the
-   * viewer's `m` key writes back here while the overlay is on screen.
+   * How much of the agent view renders as Markdown. Read through a getter by
+   * the view rather than captured like `showCost`, because the view's `m` key
+   * writes back here while the view is on screen.
    */
   let viewerMarkdown: ViewerMarkdownMode = "assistant";
   function getViewerMarkdown(): ViewerMarkdownMode { return viewerMarkdown; }
   function setViewerMarkdown(mode: ViewerMarkdownMode): void { viewerMarkdown = mode; }
   /**
-   * The viewer's `m` key, from either entry point: set the mode and persist it,
+   * The agent view's `m` key, from either entry point: set the mode and persist it,
    * so the key and `/agents → Settings` stay one setting rather than one per
    * entry point. `ctx` carries only the warning a failed write notifies with,
    * and the fleet list may be acting without one.
@@ -1133,7 +1134,7 @@ export default function (pi: ExtensionAPI) {
   function setWidgetMode(m: WidgetMode): void { widgetMode = m; widget.update(); }
 
   // Claude Code-style FleetView: navigable list of main + subagents below the editor.
-  // The last two arguments keep a conversation overlay opened here identical to
+  // The last two arguments keep an agent view opened here identical to
   // one opened from `/agents`: same setting on the way in, same persist out.
   const fleet = new FleetList(manager, agentActivity, isShowCostEnabled, getViewerMarkdown,
     (mode) => chooseViewerMarkdown(mode, currentCtx as unknown as ExtensionCommandContext | undefined));
@@ -1884,7 +1885,7 @@ Terse command-style prompts produce shallow, generic work.
         runInBackground,
         isolation,
       };
-      // Tool-result render shows the mode label too; viewer's header already does.
+      // Tool-result render shows the mode label too; the agent view's header already does.
       const modeLabel = getPromptModeLabel(subagentType);
       const { tags: invocationTags } = buildInvocationTags(agentInvocation);
       const agentTags = modeLabel ? [modeLabel, ...invocationTags] : invocationTags;
@@ -3051,33 +3052,33 @@ Terse command-style prompts produce shallow, generic work.
     });
     if (!record) return;
 
-    await viewAgentConversation(ctx, record);
+    await viewAgent(ctx, record);
     // Back-navigation: re-show the list
     await showRunningAgents(ctx);
   }
 
-  async function viewAgentConversation(ctx: ExtensionCommandContext, record: AgentRecord) {
+  async function viewAgent(ctx: ExtensionCommandContext, record: AgentRecord) {
     if (!record.session) {
       ctx.ui.notify(`Agent is ${record.status === "queued" ? "queued" : "expired"} — no session available.`, "info");
       return;
     }
 
-    const { ConversationViewer } = await import("./ui/conversation-viewer.js");
     const session = record.session;
     const activity = agentActivity.get(record.id);
     let currentId = record.id;
+    const roster = () => manager.listAgents()
+      .filter(agent => isTopLevelAgent(agent) && agent.session)
+      .sort((a, b) => a.startedAt - b.startedAt);
 
     await ctx.ui.custom<undefined>(
       (tui, theme, keybindings, done) => {
-        const viewer = new ConversationViewer(tui, session, record, activity, theme, done, () => {
+        const agentView = new AgentView(tui, session, record, activity, theme, done, () => {
           const current = manager.listAgents().find(agent => agent.id === currentId);
           if (manager.abort(currentId)) {
             ctx.ui.notify(`Stopped "${current?.description ?? record.description}".`, "info");
           }
         }, keybindings, (message: string) => manager.steer(currentId, message), showCost, getViewerMarkdown, (mode) => chooseViewerMarkdown(mode, ctx), direction => {
-          const records = manager.listAgents()
-            .filter(agent => isTopLevelAgent(agent) && agent.session)
-            .sort((a, b) => a.startedAt - b.startedAt);
+          const records = roster();
           const index = records.findIndex(agent => agent.id === currentId);
           const next = records[index + direction];
           if (!next?.session) {
@@ -3086,13 +3087,14 @@ Terse command-style prompts produce shallow, generic work.
             return;
           }
           currentId = next.id;
-          viewer.setAgent(next.session, next, agentActivity.get(next.id));
-        });
-        return viewer;
+          agentView.setAgent(next.session, next, agentActivity.get(next.id));
+        }, roster);
+        return agentView;
       },
       {
-        // Use pi's normal editor slot; Esc restores the parent editor.
-        overlay: false,
+        // Replace the complete main view; Esc restores the parent view.
+        overlay: true,
+        overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" },
       },
     );
   }
@@ -3653,7 +3655,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
           id: "showModel",
           label: "Show model",
           description:
-            "Name the model driving each agent, and the thinking level it is running at, on the widget's running rows. The Agent tool result and the conversation viewer show the pair either way — this adds it to the widget, where the row is already dense.",
+            "Name the model driving each agent, and the thinking level it is running at, on the widget's running rows. The Agent tool result and the agent view show the pair either way — this adds it to the widget, where the row is already dense.",
           currentValue: isShowModelEnabled() ? "on" : "off",
           values: ["on", "off"],
         },
@@ -3661,7 +3663,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
           id: "viewerMarkdown",
           label: "Viewer markdown",
           description:
-            "How much of the conversation viewer renders as Markdown. assistant = assistant text only (default); all = tool results too, for tools that emit Markdown — accepting that a Markdown pass over a diff or a log eats `#` comments, swallows a `---` line and re-fences indented output; off = everything verbatim. `m` in the viewer cycles the same setting (footer: raw / md / md+).",
+            "How much of the agent view renders as Markdown. assistant = assistant text only (default); all = tool results too, for tools that emit Markdown — accepting that a Markdown pass over a diff or a log eats `#` comments, swallows a `---` line and re-fences indented output; off = everything verbatim. `m` in the agent view cycles the same setting (footer: raw / md / md+).",
           currentValue: getViewerMarkdown(),
           values: ["off", "assistant", "all"],
         },
@@ -3953,7 +3955,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
   // of outcome so listeners see the in-memory change.
   /**
    * Persist + broadcast the settings, silent on success — for a change whose
-   * feedback is the UI it just changed: the viewer's `m` key, where a
+   * feedback is the UI it just changed: the agent view's `m` key, where a
    * notification per press would talk over the overlay it is describing.
    *
    * A *failed* write still speaks. Every other settings path warns when the
@@ -3994,7 +3996,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
   const workflowMenuDeps: WorkflowMenuDeps = {
     tasks: workflowTasks,
     getRecord: id => manager.getRecord(id),
-    viewAgentConversation,
+    viewAgent,
     // Read lazily: `currentCtx` is rebound on every session_start, and the
     // fleet list may act between sessions, when there is none.
     getCtx: () => currentCtx as unknown as ExtensionCommandContext | undefined,

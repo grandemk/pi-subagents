@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Agent navigation now keeps the roster visible.** Selecting an agent from FleetView or `/agents` opens a full-screen view with a persistent sidebar using pi's native transcript components, so sibling agents remain visible and navigable while the parent transcript, editor, widgets and footer stay hidden. `↑`/`↓` and `←`/`→` switch between sibling agents, while `Esc` restores the parent view.
+
 ## [0.20.0] - 2026-08-31
 
 ### Changed

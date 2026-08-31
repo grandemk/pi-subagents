@@ -68,7 +68,7 @@ A **card in the transcript**, updating as the run goes:
   ⎿  auditing 6 route files
 ```
 
-A **`workflow` row in FleetView**, above the agents, carrying its agent counts where a description would go. `⏎` on it opens the inspector rather than a conversation overlay.
+A **`workflow` row in FleetView**, above the agents, carrying its agent counts where a description would go. `⏎` on it opens the inspector rather than an agent view.
 
 Each row names the model the child *actually* ran on — read back from its session once pi has resolved its defaults, not the string the script asked for — so a fuzzy `model: "haiku"` reads as the model it resolved to, and an `agent()` that named no model still says what it inherited.
 
@@ -87,9 +87,9 @@ The fifth key only shows you something:
 
 | Key | |
 |---|---|
-| `c` | Open the selected agent's **conversation** — the same viewer a fleet-list row opens, over the dialog |
+| `c` | Open the selected agent's **agent view** — the same split view a fleet-list row opens, over the dialog |
 
-Because it changes nothing, `c` works at both levels and on an agent that has already settled — which is the usual case, since reading what a child did is most of why the inspector gets opened. The dialog hides itself while the conversation is up and comes back when you close it. A row with no child behind it yet (queued, or replayed from the resume journal) has no conversation to open and does not offer the key.
+Because it changes nothing, `c` works at both levels and on an agent that has already settled — which is the usual case, since reading what a child did is most of why the inspector gets opened. The dialog hides itself while the agent view is up and comes back when you close it; the view keeps the agent list visible for sibling navigation. A row with no child behind it yet (queued, or replayed from the resume journal) has no conversation to open and does not offer the key.
 
 A run's own agents are not listed separately in the fleet list, the widget, the `/agents` menus or `@handle` resolution — they belong to the run, which reports for them. `c` in the inspector is the one way in to a child's conversation.
 

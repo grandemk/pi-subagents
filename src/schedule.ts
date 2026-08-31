@@ -258,7 +258,7 @@ export class SubagentScheduler {
         thinkingLevel: job.thinking,
         isolation: job.isolation,
         // A scheduled run has no tool call to build this, so without it the
-        // conversation viewer shows nothing about how the job was configured.
+        // agent view shows nothing about how the job was configured.
         // The model is left out on purpose: agent-manager fills in the effective
         // one when the session reports it, and naming the pre-session pick here
         // would only be right until then.

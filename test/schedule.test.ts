@@ -328,7 +328,7 @@ describe("SubagentScheduler — fire path", () => {
 
   it("fire passes the job's configuration as the invocation snapshot", () => {
     // A scheduled run has no tool call to build one, so without this the
-    // conversation viewer can say nothing about how the job was configured.
+    // agent view can say nothing about how the job was configured.
     // The model is left out on purpose: agent-manager fills in the effective one
     // once the session reports it.
     scheduler.addJob({

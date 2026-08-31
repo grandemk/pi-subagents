@@ -82,7 +82,7 @@ interface Harness {
   openedWorkflows: () => string[];
   /** Settle the workflow dialog the list last opened; flushes the close microtask. */
   closeWorkflowDialog: () => Promise<void>;
-  /** The overlay component (a real ConversationViewer) once one is opened. */
+  /** The full-screen component (a real AgentView) once one is opened. */
   overlayComponent: () => { handleInput(data: string): void } | undefined;
   /** Feed a key to the registered input handler; returns the consume result. */
   press: (data: string) => { consume?: boolean } | undefined;
@@ -139,7 +139,7 @@ function harness(
         const done = (r: undefined) => { closed = true; overlayDone = undefined; resolve(r); };
         overlayDone = done;
         // Construct the overlay component so the controller wires viewerClose,
-        // and keep it so tests can drive the real ConversationViewer's input.
+        // and keep it so tests can drive the real AgentView's input.
         overlayComponent = factory(fakeTui, theme, undefined, done);
       });
     }) as FleetUICtx["custom"],
@@ -516,7 +516,7 @@ describe("FleetList overlay lifecycle", () => {
     const agents = [makeRecord({ id: "live", description: "the one" })];
     const h = harness(agents);
     h.press(DOWN);  // activate (main)
-    h.press(DOWN);  // → the agent and open the conversation viewer
+    h.press(DOWN);  // → the agent and open the agent view
 
     const viewer = h.overlayComponent();
     expect(viewer).toBeDefined();
@@ -534,7 +534,7 @@ describe("FleetList overlay lifecycle", () => {
       onViewerMarkdown: (mode) => persisted.push(mode),
     });
     h.press(DOWN);  // activate (main)
-    h.press(DOWN);  // → the agent and open the conversation viewer
+    h.press(DOWN);  // → the agent and open the agent view
 
     h.overlayComponent()!.handleInput("m");
 
@@ -711,7 +711,7 @@ describe("FleetList workflow rows", () => {
     expect(h.press(DOWN)?.consume).toBeFalsy();
   });
 
-  it("opens the selected run rather than a conversation viewer", () => {
+  it("opens the selected run rather than an agent view", () => {
     const h = harness([makeRecord({ id: "a1", description: "one" })]);
     h.setWorkflows([makeWorkflow({ id: "wf_pick" })]);
 

@@ -928,7 +928,7 @@ export function handleWorkflowDialogKey(
   view: ResolvedWorkflowDialog,
 ): { state: WorkflowDialogState; action?: WorkflowDialogAction } | undefined {
   // Ctrl+C is the reflex for backing out of a full-screen overlay, so it closes
-  // outright from EITHER level — the conversation viewer's #255 fix, which this
+  // outright from EITHER level — the agent view's #255 fix, which this
   // dialog is reached the same way as. Deliberately not folded into the `esc`
   // branch below: stepping back a level on the reflex key still leaves the
   // overlay on screen, which is the stuck feeling the key exists to avoid.

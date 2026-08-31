@@ -4,9 +4,9 @@
  * `workflow-dialog.test.ts` proves the key raises the action and the footer
  * advertises it; this proves the half only the real extension can: that a
  * child's manager record id actually reaches the row (runtime → host →
- * progress entry), that `c` opens THAT record's conversation as a second
+ * progress entry), that `c` opens THAT record's agent view as a second
  * overlay, and that the dialog hides itself underneath rather than leaving its
- * frame peeking around the viewer.
+ * frame peeking around the view.
  *
  * Without the id on the row there is nothing to open, so the run's agents were
  * the one part of the fleet with no way to read what they did.
@@ -23,7 +23,7 @@ import { runAgent } from "../src/agent-runner.js";
 import subagentsExtension from "../src/index.js";
 import { ctx, type Hermetic, hermeticDir, makePi } from "./helpers/boot-extension.js";
 
-/** Enough of a pi session for the manager to keep, and the viewer to render. */
+/** Enough of a pi session for the manager to keep, and the agent view to render. */
 const fakeSession = () => ({
   dispose: vi.fn(),
   subscribe: vi.fn(() => vi.fn()),
@@ -33,7 +33,7 @@ const fakeSession = () => ({
 
 /** One overlay the extension asked `ui.custom` for, held open like a real one. */
 interface OpenOverlay {
-  options: { overlay?: boolean; onHandle?: (handle: unknown) => void };
+  options: { overlay?: boolean; overlayOptions?: unknown; onHandle?: (handle: unknown) => void };
   instance: { handleInput?(data: string): void; render?(width: number): string[]; dispose?(): void };
   /** Resolve the overlay's promise, as closing it does. */
   close(): void;
@@ -59,7 +59,7 @@ function overlayCtx() {
         return options.find(option => /^Workflows \(\d+\)$/.test(option));
       }),
       custom: vi.fn(async (factory: (...args: unknown[]) => unknown, options?: OpenOverlay["options"]) => {
-        // `terminal` included: the conversation viewer sizes itself off it, so
+        // `terminal` included: the agent view sizes itself off it, so
         // a bare `requestRender` stub would throw on the second overlay.
         const tui = { requestRender: () => {}, terminal: { columns: 120, rows: 40 } };
         const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
@@ -74,7 +74,7 @@ function overlayCtx() {
   return { context, overlays, hidden };
 }
 
-describe("the inspector opens a workflow agent's conversation", () => {
+describe("the inspector opens a workflow agent view", () => {
   let hermetic: Hermetic;
 
   beforeEach(() => {
@@ -127,18 +127,19 @@ describe("the inspector opens a workflow agent's conversation", () => {
     dialog.handleInput?.("c");
     await vi.waitFor(() => expect(ui.overlays).toHaveLength(2));
 
-    // A second UI surface, using the viewer's own terms — not the dialog reused.
-    // The viewer occupies pi's normal editor slot so the parent transcript can
-    // be restored directly, rather than opening another modal overlay.
-    expect(ui.overlays[1].options.overlay).toBe(false);
-    expect(ui.overlays[1].instance.constructor.name).toBe("ConversationViewer");
+    // A second UI surface, using the agent view rather than reusing the dialog.
+    // It replaces the complete main view, so the parent transcript cannot peek
+    // around it while the child session is being inspected.
+    expect(ui.overlays[1].options.overlay).toBe(true);
+    expect(ui.overlays[1].options.overlayOptions).toEqual({ anchor: "top-left", width: "100%", maxHeight: "100%" });
+    expect(ui.overlays[1].instance.constructor.name).toBe("AgentView");
     // ...with the dialog hidden underneath it: the two frames size themselves
     // to different content, so the taller one's edges would show around the
     // shorter.
     expect(ui.hidden).toEqual([true]);
 
     ui.overlays[1].close();
-    // And back, so closing the conversation returns to the run it was opened
+    // And back, so closing the agent view returns to the run it was opened
     // from rather than to an empty screen.
     await vi.waitFor(() => expect(ui.hidden).toEqual([true, false]));
 

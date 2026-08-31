@@ -1,7 +1,7 @@
 /**
  * no-fs-on-render.perf.test.ts — a frame must not touch the disk.
  *
- * The widget and the conversation viewer redraw on every TUI frame, so a
+ * The widget and the agent view redraw on every TUI frame, so a
  * synchronous read on either path blocks the event loop at up to 62 Hz. Nothing
  * on those paths reads today; this is the guard that keeps it that way, because
  * the mistake is easy to make and impossible to see in a functional test — the
@@ -34,7 +34,7 @@ vi.mock("node:fs", async (importOriginal) => {
 });
 
 const { AgentWidget } = await import("../../src/ui/agent-widget.js");
-const { ConversationViewer } = await import("../../src/ui/conversation-viewer.js");
+const { AgentView } = await import("../../src/ui/agent-view.js");
 const { makeFleet, makeSession, mountViewer, mountWidget } = await import("../helpers/perf-fixtures.js");
 
 describe("a rendered frame touches no filesystem", () => {
@@ -50,8 +50,8 @@ describe("a rendered frame touches no filesystem", () => {
     expect(FS_CALLS).toEqual([]);
   });
 
-  it("ConversationViewer.render", () => {
-    const viewer = mountViewer(ConversationViewer, makeSession(40));
+  it("AgentView.render", () => {
+    const viewer = mountViewer(AgentView, makeSession(40));
     viewer.render(120);
     FS_CALLS.length = 0;
 

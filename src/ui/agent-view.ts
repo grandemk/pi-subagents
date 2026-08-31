@@ -1,7 +1,7 @@
 /**
- * conversation-viewer.ts — Live conversation overlay for viewing agent sessions.
+ * agent-view.ts — Full-screen agent session view.
  *
- * Displays a scrollable, live-updating view of an agent's conversation.
+ * Displays a scrollable, live-updating view of an agent's session.
  * Subscribes to session events for real-time streaming updates.
  */
 
@@ -21,14 +21,12 @@ import type { Theme } from "./agent-widget.js";
 import { type AgentActivity, buildInvocationTags, describeActivity, fgPreservingNestedStyles, formatCost, formatDuration, formatSessionTokens, getPromptModeLabel } from "./agent-widget.js";
 import { createViewerKeys, type ViewerKeybindings, type ViewerKeys } from "./viewer-keys.js";
 
-/** Base lines consumed by the borderless viewer chrome: header + spacer + footer. */
+/** Base lines consumed by the borderless agent-view chrome: header + spacer + footer. */
 const CHROME_LINES_BASE = 3;
 const MIN_VIEWPORT = 3;
-/** Height ceiling shared by the overlay's `maxHeight` and the viewer's internal viewport cap. */
-export const VIEWPORT_HEIGHT_PCT = 70;
 
 /**
- * Cap on a single tool result or bash output before the viewer elides the rest.
+ * Cap on a single tool result or bash output before the agent view elides the rest.
  *
  * The cap is not cosmetic — it bounds render cost. `buildContentLines()` runs on
  * every render *and* on every scroll key (`handleInput` calls it to compute
@@ -40,7 +38,7 @@ export const VIEWPORT_HEIGHT_PCT = 70;
  */
 export const RESULT_MAX_CHARS = 16_000;
 
-/** Cycle order for the viewer's `m` key. */
+/** Cycle order for the agent view's `m` key. */
 const MARKDOWN_MODES: readonly ViewerMarkdownMode[] = ["off", "assistant", "all"];
 
 /** Footer labels — short, because the idle footer is already full at 80 columns. */
@@ -49,6 +47,14 @@ const MARKDOWN_MODE_LABELS: Record<ViewerMarkdownMode, string> = {
   assistant: "md",
   all: "md+",
 };
+
+/** The records shown in the optional agent-view sidebar. */
+export type AgentViewRoster = () => readonly AgentRecord[];
+
+/** Keep enough transcript width for the viewer on ordinary terminals. */
+const SIDEBAR_MIN_TERMINAL_WIDTH = 40;
+const SIDEBAR_MIN_WIDTH = 18;
+const SIDEBAR_MAX_WIDTH = 30;
 
 /**
  * Both options keep the renderer from *rewriting* source that only looks like
@@ -63,7 +69,7 @@ const MARKDOWN_OPTIONS: MarkdownOptions = {
 
 /**
  * Pi's own Markdown theme when this process has one, else a theme built from the
- * viewer's `Theme`.
+ * agent view's `Theme`.
  *
  * Preferring pi's is what buys syntax-highlighted code fences (it carries a
  * `highlightCode`), and it keeps this surface consistent with the notification
@@ -113,7 +119,7 @@ function fallbackMarkdownTheme(th: Theme): MarkdownTheme {
  * Cap `text` at `RESULT_MAX_CHARS`, reporting the elision separately rather than
  * appending it.
  *
- * Separately because the notice is the viewer's chrome, not the tool's output.
+ * Separately because the notice is the agent view's chrome, not the tool's output.
  * Appended into the string it becomes content: a cut landing inside a fenced
  * code block — likely, on exactly the large `ctx_execute` results this is for —
  * renders the notice as a line of source inside the fence.
@@ -143,7 +149,7 @@ function truncationNote(elided: number): string {
   return `... (truncated, ${humanCount(elided)} more character${elided === 1 ? "" : "s"})`;
 }
 
-export class ConversationViewer implements Component {
+export class AgentView implements Component {
   private scrollOffset = 0;
   private autoScroll = true;
   private unsubscribe: (() => void) | undefined;
@@ -167,6 +173,8 @@ export class ConversationViewer implements Component {
   private readonly markdownCache = new WeakMap<object, { md: Markdown; text: string; failed?: boolean }>();
   /** Move to the previous/next agent. Omitted when no roster is available. */
   private onNavigate: ((direction: -1 | 1) => void) | undefined;
+  /** Supplies the list kept visible beside the transcript. */
+  private getRoster: AgentViewRoster | undefined;
 
   constructor(
     private tui: TUI,
@@ -195,13 +203,15 @@ export class ConversationViewer implements Component {
     private viewerMarkdown?: () => ViewerMarkdownMode,
     /**
      * Persist a mode chosen with `m`, so the key and `/agents → Settings` mean
-     * the same thing. Omitted → `m` still cycles, viewer-locally.
+     * the same thing. Omitted → `m` still cycles, view-locally.
      */
     private onMarkdownMode?: (mode: ViewerMarkdownMode) => void,
     onNavigate?: (direction: -1 | 1) => void,
+    getRoster?: AgentViewRoster,
   ) {
     this.markdownTheme = resolveMarkdownTheme(theme);
     this.onNavigate = onNavigate;
+    this.getRoster = getRoster;
     this.keys = createViewerKeys(keybindings);
     this.unsubscribe = session.subscribe(() => {
       if (this.closed) return;
@@ -209,7 +219,7 @@ export class ConversationViewer implements Component {
     });
   }
 
-  /** Replace the conversation shown by this viewer without closing the viewer. */
+  /** Replace the session shown by this view without closing the view. */
   setAgent(session: AgentSession, record: AgentRecord, activity?: AgentActivity): void {
     this.unsubscribe?.();
     this.session = session;
@@ -242,10 +252,9 @@ export class ConversationViewer implements Component {
       return;
     }
 
-    // When a roster is available, up/down move between conversations. At the
-    // first agent, the roster callback returns to the parent flow. Keep
-    // left/right as aliases for sibling navigation for users who learned the
-    // original viewer controls.
+    // When a roster is available, up/down move between agents. At the first
+    // agent, the roster callback returns to the parent flow. Keep left/right as
+    // aliases for sibling navigation.
     if (this.onNavigate && matchesKey(data, "up")) {
       this.navigate(-1);
       return;
@@ -326,7 +335,62 @@ export class ConversationViewer implements Component {
   }
 
   render(width: number): string[] {
-    return this.renderNative(width);
+    const screenRows = this.tui.terminal.rows;
+    if (this.getRoster && width >= SIDEBAR_MIN_TERMINAL_WIDTH) {
+      const sidebarWidth = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.floor(width * 0.28)));
+      const dividerWidth = 1;
+      const transcriptWidth = Math.max(1, width - sidebarWidth - dividerWidth);
+      const transcript = this.renderNative(transcriptWidth);
+      const sidebar = this.renderSidebar(sidebarWidth, screenRows);
+      return Array.from({ length: screenRows }, (_, row) => {
+        const left = truncateToWidth(sidebar[row] ?? "", sidebarWidth);
+        const right = truncateToWidth(transcript[row] ?? "", transcriptWidth);
+        return left
+          + " ".repeat(Math.max(0, sidebarWidth - visibleWidth(left)))
+          + this.theme.fg("dim", "│")
+          + right
+          + " ".repeat(Math.max(0, transcriptWidth - visibleWidth(right)));
+      });
+    }
+
+    const lines = this.renderNative(width);
+    // `ctx.ui.custom({ overlay: true })` composites over pi's existing main
+    // screen. Fill the entire terminal so the old transcript, editor, widgets
+    // and footer are replaced rather than peeking through between our rows.
+    while (lines.length < screenRows) lines.push(" ".repeat(width));
+    return lines.slice(0, screenRows);
+  }
+
+  /** Render the agent roster alongside the transcript when opened from a list. */
+  private renderSidebar(width: number, height: number): string[] {
+    const records = [...(this.getRoster?.() ?? [])];
+    if (!records.some(record => record.id === this.record.id)) records.push(this.record);
+
+    const entries: Array<{ id: string; record?: AgentRecord }> = [
+      { id: "main" },
+      ...records.map(record => ({ id: record.id, record })),
+    ];
+    const selected = Math.max(0, entries.findIndex(entry => entry.id === this.record.id));
+    const bodyRows = Math.max(1, height - 2);
+    const start = Math.min(Math.max(0, entries.length - bodyRows), Math.max(0, selected - bodyRows + 1));
+    const visible = entries.slice(start, start + bodyRows);
+    const lines = [this.theme.bold(this.theme.fg("accent", "Agents")), ""];
+
+    if (start > 0) lines.push(this.theme.fg("dim", `↑ ${start} more`));
+    for (const entry of visible) {
+      const isSelected = entry.id === this.record.id;
+      const marker = isSelected ? this.theme.fg("accent", "●") : this.theme.fg("dim", "○");
+      const label = entry.id === "main"
+        ? (isSelected ? this.theme.fg("text", "main") : this.theme.fg("muted", "main"))
+        : renderAgentName(entry.record!.type, this.theme, isSelected
+          ? { fallbackColor: "text", bold: true }
+          : { fallbackColor: "muted" });
+      const description = entry.id === "main" ? "" : ` ${entry.record!.description}`;
+      lines.push(truncateToWidth(` ${marker} ${label}${description}`, width));
+    }
+    const hiddenBelow = entries.length - (start + visible.length);
+    if (hiddenBelow > 0) lines.push(this.theme.fg("dim", `↓ ${hiddenBelow} more`));
+    return lines;
   }
 
   /** Navigate and clear a pending stop confirmation from the previous agent. */
@@ -419,7 +483,7 @@ export class ConversationViewer implements Component {
     this.tui.requestRender();
   }
 
-  /** Render a viewport around pi's native conversation components. */
+  /** Render the agent session around pi's native transcript components. */
   private renderNative(width: number): string[] {
     if (width < 6) return [];
     this.lastInnerW = width;
@@ -491,7 +555,7 @@ export class ConversationViewer implements Component {
       return this.buildNativeContentLines(width);
     } catch {
       // Unit-test hosts and older pi embeddings may not initialize the native
-      // transcript theme. Keep the viewer usable with the safe text renderer.
+      // transcript theme. Keep the agent view usable with the safe text renderer.
       return this.buildContentLines(width);
     }
   }
@@ -567,10 +631,9 @@ export class ConversationViewer implements Component {
   // ---- Private ----
 
   private viewportHeight(): number {
-    // Cap mirrors the overlay's maxHeight — otherwise the viewer would render
-    // more lines than the overlay shows and clip the footer.
-    const maxRows = Math.floor((this.tui.terminal.rows * VIEWPORT_HEIGHT_PCT) / 100);
-    return Math.max(MIN_VIEWPORT, maxRows - this.chromeLines());
+    // The agent view owns the terminal, so use the whole screen and reserve
+    // only the rows needed by its header, footer and optional composer.
+    return Math.max(MIN_VIEWPORT, this.tui.terminal.rows - this.chromeLines());
   }
 
   private chromeLines(): number {
@@ -579,7 +642,7 @@ export class ConversationViewer implements Component {
   }
 
   private invocationLine(): string | undefined {
-    // Canonical id here, short label everywhere else: this overlay is opened to
+    // Canonical id here, short label everywhere else: this full-screen view is opened to
     // inspect one agent and has the width for it, and two providers can serve
     // models whose short names read alike.
     const { modelName, modelId, tags } = buildInvocationTags(this.record.invocation);

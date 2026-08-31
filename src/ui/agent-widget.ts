@@ -287,7 +287,7 @@ export class AgentWidget {
      * model driving them and the thinking level it is running at. Defaults to
      * off — the extension supplies the user's `showModel` setting — because the
      * row is already dense and the same pair is on the tool result and in the
-     * conversation viewer unconditionally.
+     * agent view unconditionally.
      */
     private showModel: () => boolean = () => false,
   ) {}

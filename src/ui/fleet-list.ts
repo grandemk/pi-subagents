@@ -3,8 +3,8 @@
  *
  * Shows `main` + each running/queued subagent as a navigable list. Pressing ↓ (or
  * ←) at an empty prompt activates the list; ↑/↓ move the selection (filled ● marker),
- * Enter opens the selected agent's live conversation overlay, Esc returns to the prompt.
- * A viewer stays open when its agent finishes; finished agents linger briefly in the list.
+ * Arrows open the selected agent's full-screen view, Esc returns to the prompt.
+ * The view stays open when its agent finishes; finished agents linger briefly in the list.
  *
  * Mechanics (see plan): the list is a `belowEditor` widget (render-only), and ALL key
  * handling goes through `onTerminalInput` — which fires before the focused editor and
@@ -16,8 +16,8 @@ import { hasAgentBadge, renderAgentName } from "../agent-color.js";
 import { type AgentManager, isTopLevelAgent } from "../agent-manager.js";
 import type { AgentRecord, ViewerMarkdownMode } from "../types.js";
 import { getLifetimeCost, getLifetimeTotal } from "../usage.js";
+import { AgentView } from "./agent-view.js";
 import { type AgentActivity, formatCost, type Theme } from "./agent-widget.js";
-import { ConversationViewer } from "./conversation-viewer.js";
 
 /** Widget key for the below-editor fleet list. */
 const FLEET_KEY = "fleet";
@@ -108,12 +108,12 @@ export class FleetList {
   private active = false;
   /** 0 = `main`, 1..N = subagents. */
   private selectedIndex = 0;
-  /** Set while a conversation overlay is open; calling it closes the overlay. */
-  private viewerClose: (() => void) | undefined;
-  /** Replaces the conversation displayed by the open viewer. */
-  private viewerSetAgent: ((record: AgentRecord) => void) | undefined;
+  /** Set while the full-screen agent view is open; calling it closes the view. */
+  private agentViewClose: (() => void) | undefined;
+  /** Replaces the session displayed by the open agent view. */
+  private agentViewSetAgent: ((record: AgentRecord) => void) | undefined;
   private viewingAgentId: string | undefined;
-  /** True when viewer navigation is returning to the parent (`main`) row. */
+  /** True when agent-view navigation is returning to the parent (`main`) row. */
   private returnToMain = false;
   /** Injected by the extension; absent until workflows are wired (or at all). */
   private workflowSource: (() => readonly FleetWorkflow[]) | undefined;
@@ -121,7 +121,7 @@ export class FleetList {
   /**
    * Set while the workflow inspector is up.
    *
-   * It does the two jobs `viewerClose` does for an agent's overlay — keep the
+   * It does the two jobs `agentViewClose` does for an agent view — keep the
    * list out of the dialog's keys, and remember which row to come back to —
    * minus the close handle, because that overlay belongs to the extension.
    */
@@ -137,15 +137,15 @@ export class FleetList {
      */
     private showCost: () => boolean = () => false,
     /**
-     * The user's `viewerMarkdown` setting, for a conversation overlay opened
-     * from here. Read live rather than captured, because the viewer's `m` key
-     * changes it while the overlay is up. Omitted → the viewer's own default.
+     * The user's `viewerMarkdown` setting, for an agent view opened
+     * from here. Read live rather than captured, because the view's `m` key
+     * changes it while the view is up. Omitted → the view's own default.
      */
     private viewerMarkdown?: () => ViewerMarkdownMode,
     /**
      * Persist a mode chosen with `m` in that overlay, so the key means the same
      * thing here as it does from `/agents` — one setting, not one per entry
-     * point. Omitted → `m` still cycles, viewer-locally.
+     * point. Omitted → `m` still cycles, view-locally.
      */
     private onViewerMarkdown?: (mode: ViewerMarkdownMode) => void,
   ) {}
@@ -175,7 +175,7 @@ export class FleetList {
   }
 
   /**
-   * Called when an agent finishes. The viewer (if open on it) stays open so the
+   * Called when an agent finishes. The agent view (if open on it) stays open so the
    * final output remains readable, and the row lingers in the list — just refresh.
    */
   onAgentFinished(_id: string): void {
@@ -186,8 +186,8 @@ export class FleetList {
     if (this.timer) { clearInterval(this.timer); this.timer = undefined; }
     this.inputUnsub?.();
     this.inputUnsub = undefined;
-    if (this.viewerClose) { this.viewerClose(); this.viewerClose = undefined; }
-    this.viewerSetAgent = undefined;
+    if (this.agentViewClose) { this.agentViewClose(); this.agentViewClose = undefined; }
+    this.agentViewSetAgent = undefined;
     this.viewingAgentId = undefined;
     this.returnToMain = false;
     // No handle to close the workflow inspector with, but the list is going
@@ -197,7 +197,7 @@ export class FleetList {
     this.widgetRegistered = false;
     this.tui = undefined;
     this.active = false;
-    // Null last so a `viewerClose()` microtask above can't re-register the widget.
+    // Null last so an `agentViewClose()` microtask above can't re-register the widget.
     this.ui = undefined;
   }
 
@@ -317,8 +317,8 @@ export class FleetList {
     // emits both, and matchesKey matches either) — act on press only, or every
     // tap would move/fire twice. Repeats still pass through for held-key nav.
     if (isKeyRelease(data)) return undefined;
-    // While a viewer or overlay is open, let it own all input.
-    if (this.viewerClose || this.viewingWorkflowId) return undefined;
+    // While an agent view or workflow overlay is open, let it own all input.
+    if (this.agentViewClose || this.viewingWorkflowId) return undefined;
     // Input listeners fire BEFORE the focused component, and dialogs
     // (ctx.ui.select/confirm/input, pi's own menus) swap the prompt editor out
     // while getEditorText() still reads the detached — empty — editor. So when
@@ -343,7 +343,7 @@ export class FleetList {
       return undefined;
     }
 
-    // Active — arrows navigate and immediately show the selected conversation.
+    // Active — arrows navigate and immediately show the selected agent view.
     if (matchesKey(data, "down") || matchesKey(data, "right")) {
       const max = this.roster().length - 1;
       this.selectedIndex = Math.min(max, this.selectedIndex + 1);
@@ -400,8 +400,8 @@ export class FleetList {
     if (entry.kind === "workflow") {
       this.viewingWorkflowId = entry.workflow.id;
       void Promise.resolve(this.openWorkflow?.(entry.workflow.id)).then(
-        () => this.clearViewer(),
-        () => this.clearViewer(),
+        () => this.clearAgentView(),
+        () => this.clearAgentView(),
       );
       return;
     }
@@ -418,13 +418,13 @@ export class FleetList {
 
     void this.ui.custom<undefined>(
       (tui, theme, keybindings, done) => {
-        this.viewerClose = () => done(undefined);
-        let viewer: ConversationViewer;
+        this.agentViewClose = () => done(undefined);
+        let agentView: AgentView;
         const closeToMain = () => {
           this.returnToMain = true;
           done(undefined);
         };
-        viewer = new ConversationViewer(
+        agentView = new AgentView(
           tui,
           session,
           record,
@@ -441,40 +441,44 @@ export class FleetList {
           this.showCost(),
           this.viewerMarkdown,
           this.onViewerMarkdown,
-          direction => this.navigateViewer(direction),
+          direction => this.navigateAgentView(direction),
+          () => this.agentRecords(),
         );
-        this.viewerSetAgent = next => {
-          if (next.session) viewer.setAgent(next.session, next, this.agentActivity.get(next.id));
+        this.agentViewSetAgent = next => {
+          if (next.session) agentView.setAgent(next.session, next, this.agentActivity.get(next.id));
         };
-        return viewer;
+        return agentView;
       },
       {
-        // Replace the editor rather than opening a modal overlay.
-        overlay: false,
+        // Cover the complete main view rather than leaving the parent
+        // transcript, editor or footer visible underneath the agent view. The
+        // view renders its own roster sidebar so navigation stays visible.
+        overlay: true,
+        overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" },
       },
-    ).then(() => this.clearViewer(), () => this.clearViewer());
+    ).then(() => this.clearAgentView(), () => this.clearAgentView());
   }
 
-  private navigateViewer(direction: -1 | 1): void {
+  private navigateAgentView(direction: -1 | 1): void {
     const records = this.agentRecords();
     const current = records.findIndex(record => record.id === this.viewingAgentId);
     const next = records[current + direction];
     if (!next?.session) {
       if (direction === -1 && current === 0) {
         this.returnToMain = true;
-        this.viewerClose?.();
+        this.agentViewClose?.();
       }
       return;
     }
-    if (!this.viewerSetAgent) return;
+    if (!this.agentViewSetAgent) return;
     this.viewingAgentId = next.id;
     const nextIndex = this.roster().findIndex(entry => entry.kind === "agent" && entry.record.id === next.id);
     if (nextIndex >= 0) this.selectedIndex = nextIndex;
-    this.viewerSetAgent(next);
+    this.agentViewSetAgent(next);
   }
 
-  /** Reset viewer state and return to the parent flow (on close or error). */
-  private clearViewer(): void {
+  /** Reset agent-view state and return to the parent flow (on close or error). */
+  private clearAgentView(): void {
     const viewed = this.viewingAgentId ?? this.viewingWorkflowId;
     if (this.returnToMain) {
       this.selectedIndex = 0;
@@ -487,8 +491,8 @@ export class FleetList {
       );
       if (idx >= 0) this.selectedIndex = idx;
     }
-    this.viewerClose = undefined;
-    this.viewerSetAgent = undefined;
+    this.agentViewClose = undefined;
+    this.agentViewSetAgent = undefined;
     this.viewingAgentId = undefined;
     this.viewingWorkflowId = undefined;
     this.returnToMain = false;
