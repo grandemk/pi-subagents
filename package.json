@@ -1,16 +1,16 @@
 {
-  "name": "@tintinweb/pi-subagents",
+  "name": "@madticstudio/pi-subagents",
   "version": "0.20.0",
   "description": "A pi extension that brings Claude Code-like sub-agents and workflow orchestration to pi — parallel execution, live widget, fleet view, custom agent types, mid-run steering, dynamic workflows, Claude Code compatibility, look and feel.",
-  "author": "tintinweb",
+  "author": "madticstudio",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/tintinweb/pi-subagents.git"
+    "url": "https://github.com/grandemk/pi-subagents.git"
   },
-  "homepage": "https://github.com/tintinweb/pi-subagents#readme",
+  "homepage": "https://github.com/grandemk/pi-subagents#readme",
   "bugs": {
-    "url": "https://github.com/tintinweb/pi-subagents/issues"
+    "url": "https://github.com/grandemk/pi-subagents/issues"
   },
   "publishConfig": {
     "access": "public"
@@ -62,7 +62,7 @@
     "extensions": [
       "./src/index.ts"
     ],
-    "video": "https://github.com/tintinweb/pi-subagents/raw/master/media/demo.mp4",
-    "image": "https://github.com/tintinweb/pi-subagents/raw/master/media/screenshot.png"
+    "video": "https://github.com/grandemk/pi-subagents/raw/master/media/demo.mp4",
+    "image": "https://github.com/grandemk/pi-subagents/raw/master/media/screenshot.png"
   }
 }
